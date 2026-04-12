@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Table {
+  id         Int       @id @default(autoincrement())
+  name       String    @unique
+  ratePerMin Float
+  sessions   Session[]
+
+  @@map("tables")
+}
+
+model Session {
+  id        Int         @id @default(autoincrement())
+  tableId   Int
+  playerName String
+  payerMode PayerMode   @default(none)
+  payerData Json?
+  overridePayerMode String?
+  overridePayerData Json?
+  overrideStatus String?
+  overridePaymentModes Json?
+  startTime DateTime
+  endTime   DateTime?
+  overrideStartTime DateTime?
+  overrideEndTime DateTime?
+  overrideRatePerMin Int?
+  status    SessionStatus @default(running)
+  amount    Float?
+  billId    Int?
+
+  table Table @relation(fields: [tableId], references: [id])
+  bill  Bill? @relation(fields: [billId], references: [id])
+
+  @@index([tableId, status])
+  @@map("sessions")
+}
+
+model Bill {
+  id          Int       @id @default(autoincrement())
+  totalAmount Float
+  discountType String?
+  discountValue Float?
+  discountedAmount Float @default(0)
+  createdAt   DateTime  @default(now())
+  sessions    Session[]
+  payments    Payment[]
+
+  @@map("bills")
+}
+
+model Payment {
+  id      Int         @id @default(autoincrement())
+  billId  Int
+  mode    PaymentMode
+  amount  Float
+
+  bill Bill @relation(fields: [billId], references: [id])
+
+  @@index([billId])
+  @@map("payments")
+}
+
+enum PayerMode {
+  none
+  single
+  split
+}
+
+enum SessionStatus {
+  running
+  completed
+  billed
+}
+
+enum PaymentMode {
+  cash
+  upi
+  card
+  due
+}

@@ -1,0 +1,30 @@
+{
+  "name": "cuedesk",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "backfill:bills": "tsx scripts/backfill-session-bill-links.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.7.0",
+    "next": "^16.0.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/react": "19.2.14",
+    "autoprefixer": "^10.4.27",
+    "postcss": "^8.5.9",
+    "prisma": "^6.7.0",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^2.1.8"
+  }
+}
