@@ -23,7 +23,7 @@ Defined in `prisma/schema.prisma`.
 - `id`, `name (unique)`, `ratePerMin`
 
 ### Session
-- Core: `tableId`, `playerName`, `startTime`, `endTime`, `status`, `amount`, `billId`
+- Core: `tableId`, `businessDayKey`, `playerName`, `startTime`, `endTime`, `status`, `amount`, `billId`
 - Payer: `payerMode`, `payerData`
 - Overrides:
   - time/rate: `overrideStartTime`, `overrideEndTime`, `overrideRatePerMin`
@@ -37,7 +37,14 @@ Defined in `prisma/schema.prisma`.
 - relation to sessions and payments
 
 ### Payment
-- `billId`, `mode`, `amount`
+- `billId`, `mode`, `amount`, `createdAt`
+- due lifecycle: `dueSettledAt`, `dueReceivedMode`, due customer fields
+
+### DailyReport
+- `businessDayKey`, `startAt`, `endAt`
+- revenue: `subtotal`, `discount`, `net`
+- collection: `cash`, `upi`, `card`
+- status: `paid`, `unpaid`, `isBalanced`
 
 ## 4. Source-of-Truth Principles
 1. Backend computes all business outcomes.
@@ -100,6 +107,13 @@ Derived from effective status + billing + payments (not UI math):
 - `Partially-Paid`
 - `Paid`
 
+Business-day reporting derives summary buckets:
+- Revenue: `subtotal`, `discount`, `net`
+- Collection: `cash`, `upi`, `card`, `due`, `dueReceived`
+- Status: `paid`, `unpaid`, `total`, `isBalanced`
+
+`dueReceived` is already included inside cash/upi/card and shown as breakdown only.
+
 ## 10. Special Pricing Rule
 PS tables (`name` starts with `PS`) use hourly bucket billing:
 - billed hours = `ceil(durationMs / 1 hour)`
@@ -111,6 +125,10 @@ All other tables use per-minute floor duration.
 ## 11. Backfill and Legacy Safety
 Script `scripts/backfill-session-bill-links.ts` safely links legacy billed sessions missing `billId` by amount/time heuristics and only applies unambiguous matches.
 
+Additional scripts:
+- `scripts/backfill-business-day-keys.ts`
+- `scripts/backfill-ledger-preview-data.ts`
+
 ## 12. Testing Strategy
 Unit tests exist under `src/tests` for:
 - session flows and override edges
@@ -120,4 +138,3 @@ Unit tests exist under `src/tests` for:
 - status derivation helpers
 
 This keeps rules deterministic and protects against regressions during UI iteration.
-

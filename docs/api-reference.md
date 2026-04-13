@@ -2,12 +2,12 @@
 
 Base URL (dev): `http://localhost:3000`
 
-All routes are local Next.js route handlers under `src/app/api`.
+All routes are local Next.js handlers under `src/app/api`.
 
 ## Tables
 
 ### GET `/api/tables`
-Returns all tables with derived table state and latest session snapshot.
+Returns all tables with derived state and current session snapshot.
 
 ### POST `/api/tables`
 Create a table.
@@ -19,8 +19,6 @@ Body:
   "ratePerMin": 6
 }
 ```
-
----
 
 ## Sessions
 
@@ -36,11 +34,10 @@ Body:
 }
 ```
 
-Notes:
-- `startTime` is optional. If provided, service applies override start time.
+`startTime` is optional.
 
 ### POST `/api/session/end`
-End the currently active/effective-running session for table.
+End effective-running session for table.
 
 Body:
 ```json
@@ -50,27 +47,13 @@ Body:
 }
 ```
 
-Notes:
-- `endTime` is optional; defaults to now.
-- Handles sessions with `overrideStatus = running`.
+`endTime` is optional.
 
 ### POST `/api/session/assign-payer`
-Assign payer info to a running session.
-
-Body:
-```json
-{
-  "sessionId": 12,
-  "payerMode": "split",
-  "payerData": [
-    { "name": "Amaan", "percentage": 50 },
-    { "name": "Zaid", "percentage": 50 }
-  ]
-}
-```
+Assign payer to running session.
 
 ### POST `/api/session/override`
-Apply override values without mutating original intent fields.
+Apply override layer to a session.
 
 Body (example):
 ```json
@@ -83,114 +66,106 @@ Body (example):
   "overridePayerData": { "name": "Saif" },
   "overrideStatus": "completed",
   "overridePaymentModes": ["cash", "upi"],
-  "adminOverride": false
+  "adminOverride": false,
+  "changedBy": "Operator"
 }
 ```
 
 ### GET `/api/session/history?sessionId=<id>`
-Returns timestamped override events for a session.
+Returns full timeline (system + override events).
 
 Response item:
 ```json
 {
   "id": 1,
   "action": "override_update",
-  "changedFields": ["overrideRatePerMin", "amount"],
-  "beforeData": {},
-  "afterData": {},
+  "actionLabel": "Override Updated",
+  "changedBy": "Operator",
+  "diffs": [
+    {
+      "field": "overrideRatePerMin",
+      "before": null,
+      "after": 8
+    }
+  ],
   "createdAt": "2026-04-13T00:00:00.000Z"
 }
 ```
 
 ### GET `/api/sessions/completed`
-Returns completed sessions that can be billed (service-filtered).
+Returns completed, unbilled sessions ready for bill creation.
 
 ### GET `/api/sessions/all?scope=current|day|range&date=YYYY-MM-DD&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
-Returns ledger-ready session rows with backend-derived amounts/states and summary totals.
+Returns ledger rows + business-day summary.
 
 `scope`:
-- `current` (default): business day window from 10:00 AM local time to now
-- `day`: selected business day by `date` param (`10:00 AM` to next day `10:00 AM`)
-- `range`: selected business-day key range by `startDate`..`endDate` (inclusive)
+- `current`: current business day (`10:00 AM` to now)
+- `day`: selected business day key
+- `range`: selected business-day key range (inclusive)
 
 Response shape:
 ```json
 {
   "data": [],
   "summary": {
+    "subtotal": 0,
+    "discount": 0,
+    "net": 0,
     "cash": 0,
     "upi": 0,
     "card": 0,
     "due": 0,
-    "unpaid": 0,
+    "dueReceived": 0,
+    "dueReceivedCash": 0,
+    "dueReceivedUpi": 0,
+    "dueReceivedCard": 0,
     "paid": 0,
-    "total": 0
+    "unpaid": 0,
+    "total": 0,
+    "isBalanced": true
   },
   "window": {
-    "scope": "range",
-    "key": "2026-04-01..2026-04-30",
+    "scope": "current",
+    "key": "2026-04-13",
     "start": "2026-04-13T04:30:00.000Z",
     "end": "2026-04-13T09:00:00.000Z"
   }
 }
 ```
 
----
+Important:
+- `total = net + dueReceived`
+- `dueReceived` is informational and already included inside cash/upi/card.
 
 ## Billing
 
 ### POST `/api/bill/create`
-Create bill from selected sessions.
-
-Body:
-```json
-{
-  "sessionIds": [10, 11, 12],
-  "discountType": "percent",
-  "discountValue": 10
-}
-```
-
-Validation:
-- sessionIds required
-- discount type must be `fixed` or `percent`
-- percent must be `<= 100`
+Create bill from selected sessions (+ optional discount).
 
 ### POST `/api/bill/discount`
-Apply or update discount on existing bill.
-
-Body:
-```json
-{
-  "billId": 15,
-  "discountType": "fixed",
-  "discountValue": 100
-}
-```
+Apply/update bill-level discount.
 
 ### GET `/api/bill/latest`
-Returns latest bill totals (including paid/remaining and discount-aware values).
+Returns latest bill with normalized fields:
+- `subtotal`, `discount`, `finalAmount`, `paidAmount`, `remaining`
 
 ### GET `/api/bill/unpaid`
-Returns only bills with `remainingAmount > 0`, newest first.
+Returns unpaid bills (`remainingAmount > 0`) with normalized totals.
 
----
+### GET `/api/bill/search`
+Bill explorer with filters:
+- `billId`
+- `payer`
+- `paymentMode`
+- `startDate`, `endDate`
+- optional `startTime`, `endTime`
 
 ## Payments
 
 ### POST `/api/payment/add`
-Add a payment row to bill.
+Add payment to bill.
 
-Body:
-```json
-{
-  "billId": 15,
-  "mode": "cash",
-  "amount": 200
-}
-```
-
-For `mode = "due"`, customer details are required:
+For due:
 ```json
 {
   "billId": 15,
@@ -201,20 +176,14 @@ For `mode = "due"`, customer details are required:
 }
 ```
 
-Validation:
-- bill must exist
-- amount > 0
-- no overpayment beyond discounted remaining amount
-- due mode requires customer name + phone
-
 ### GET `/api/payment/due-report`
-Returns all pending due entries with customer details and bill linkage.
+Aggregated due by customer.
 
-### GET `/api/customers/search?q=<text>`
-Search customers by name or phone for realtime suggestions.
+### GET `/api/payment/due-report-by-bill`
+Due report by bill with bill/date breakup.
 
 ### POST `/api/payment/receive-due`
-Marks a due entry as received in `cash` / `upi` / `card`.
+Settle due to `cash` / `upi` / `card`.
 
 Body:
 ```json
@@ -225,11 +194,22 @@ Body:
 }
 ```
 
----
+Also supports customer-level settlement by `customerPhone`.
 
-## Error Format
+### GET `/api/customers/search?q=<text>`
+Realtime customer suggestions by phone/name.
+
+## Reports
+
+### GET `/api/reports/daily?key=YYYY-MM-DD`
+Returns one persisted daily report snapshot by business-day key.
+
+### GET `/api/reports/daily?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
+Returns snapshot list in key range.
+
+## Errors
+
 Most validation/business failures return:
-
 ```json
 {
   "error": "Error message"

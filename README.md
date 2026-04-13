@@ -32,9 +32,13 @@ It is built with Next.js + Prisma + SQLite and keeps backend logic as the single
   - multiple payments per bill
   - `cash` / `upi` / `card` / `due`
   - strict no-overpay validation against discounted totals
+  - due settlement tracking (`dueReceivedMode`, `dueSettledAt`)
 - Ledger:
-  - backend-derived paid amount and state
+  - business-day aware reporting window (10 AM to next 10 AM)
+  - backend-derived revenue, collection, and status summaries
+  - due-received visibility (included in collection modes)
   - grouped by bill context
+  - daily snapshot storage (`DailyReport`)
 
 ## Project Structure
 `src/app/page.tsx`  
@@ -95,6 +99,8 @@ npm run dev
 - `npm test` - run unit tests
 - `npm run test:watch` - run tests in watch mode
 - `npm run backfill:bills` - backfill missing `billId` on legacy billed sessions
+- `npm run backfill:business-day-keys` - fill legacy `businessDayKey` values
+- `npm run backfill:ledger-demo` - seed preview ledger/demo data
 
 ## LAN Usage
 Start server and open from other devices on the same network:
@@ -124,6 +130,17 @@ npm run start
 - `percent`: 0..100 only
 - Payments validate against discounted bill total
 - Discount update is blocked if fixed discount exceeds current remaining amount
+
+## Business Day Reporting
+- Business day boundary is fixed at `10:00 AM` local time.
+- `current` report scope: `10:00 AM` to now.
+- `day` scope: selected day key (`YYYY-MM-DD`) mapped to `10:00 AM` -> next day `10:00 AM`.
+- `range` scope: inclusive business-day keys.
+- Daily summary includes:
+  - Revenue: `subtotal`, `discount`, `net`
+  - Collection: `cash`, `upi`, `card`, `due`, `dueReceived`
+  - Status: `paid`, `unpaid`, `total`, `isBalanced`
+- Note: `dueReceived` is informational and already included in `cash`/`upi`/`card`.
 
 ## Design Docs
 See:

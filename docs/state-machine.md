@@ -77,19 +77,35 @@ Important guardrails enforced in services:
 - Prevent invalid override ranges (`end <= start`).
 - Prevent invalid payer override payloads.
 - Prevent forbidden lifecycle jumps via state-machine checks.
+- Paid lifecycle is determined using bill-level completion (`paidAmount >= billedAmount`).
 - When ending a session that was force-overridden to running:
   - find by `status=running OR overrideStatus=running`
   - set `status=completed`
   - clear `overrideStatus` to avoid bounce-back.
 
-## 8. Practical Transition Examples
+## 8. Business-Day Reporting State
+Reporting runs on business-day windows (`10:00 AM` to next `10:00 AM`).
+
+Summary invariants:
+```ts
+net = subtotal - discount
+total = net + dueReceived
+isBalanced = total === paid + unpaid
+```
+
+Where:
+- `dueReceived` is old due settled in current window
+- `paid` is current-window cash+upi+card (including due settlements)
+- `dueReceived` is shown separately for visibility but not added on top of cash/upi/card by UI.
+
+## 9. Practical Transition Examples
 - `running -> completed`: valid via end session.
 - `completed -> billed`: valid via bill creation or override with guards.
 - `billed -> completed`: only allowed when bill constraints pass (e.g., no payments depending on path).
 - `completed -> running`: allowed as backward override.
 - `paid -> billed`: guarded and requires explicit admin override behavior where applicable.
 
-## 9. Mermaid Diagram
+## 10. Mermaid Diagram
 Use this compatible diagram block:
 
 ```mermaid
@@ -110,4 +126,3 @@ flowchart TD
   I -->|< amount| K[Ledger Partially-Paid]
   I -->|>= amount| L[Ledger Paid]
 ```
-
