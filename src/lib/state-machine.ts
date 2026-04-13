@@ -16,6 +16,7 @@ export function deriveLifecycleState(input: {
   status: "running" | "completed" | "billed";
   billId: number | null;
   paidAmount: number;
+  billedAmount?: number;
 }): LifecycleState {
   if (input.status === "running") {
     return "Running";
@@ -25,7 +26,8 @@ export function deriveLifecycleState(input: {
     return "Completed";
   }
 
-  if (input.paidAmount > 0) {
+  const billedAmount = typeof input.billedAmount === "number" ? input.billedAmount : 0;
+  if (billedAmount > 0 && input.paidAmount >= billedAmount - 0.01) {
     return "Paid";
   }
 

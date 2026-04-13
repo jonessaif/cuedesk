@@ -87,11 +87,53 @@ Body (example):
 }
 ```
 
+### GET `/api/session/history?sessionId=<id>`
+Returns timestamped override events for a session.
+
+Response item:
+```json
+{
+  "id": 1,
+  "action": "override_update",
+  "changedFields": ["overrideRatePerMin", "amount"],
+  "beforeData": {},
+  "afterData": {},
+  "createdAt": "2026-04-13T00:00:00.000Z"
+}
+```
+
 ### GET `/api/sessions/completed`
 Returns completed sessions that can be billed (service-filtered).
 
-### GET `/api/sessions/all`
-Returns ledger-ready session rows with backend-derived amounts/states.
+### GET `/api/sessions/all?scope=current|day|range&date=YYYY-MM-DD&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
+Returns ledger-ready session rows with backend-derived amounts/states and summary totals.
+
+`scope`:
+- `current` (default): business day window from 10:00 AM local time to now
+- `day`: selected business day by `date` param (`10:00 AM` to next day `10:00 AM`)
+- `range`: selected business-day key range by `startDate`..`endDate` (inclusive)
+
+Response shape:
+```json
+{
+  "data": [],
+  "summary": {
+    "cash": 0,
+    "upi": 0,
+    "card": 0,
+    "due": 0,
+    "unpaid": 0,
+    "paid": 0,
+    "total": 0
+  },
+  "window": {
+    "scope": "range",
+    "key": "2026-04-01..2026-04-30",
+    "start": "2026-04-13T04:30:00.000Z",
+    "end": "2026-04-13T09:00:00.000Z"
+  }
+}
+```
 
 ---
 
@@ -148,10 +190,40 @@ Body:
 }
 ```
 
+For `mode = "due"`, customer details are required:
+```json
+{
+  "billId": 15,
+  "mode": "due",
+  "amount": 200,
+  "dueCustomerName": "Saif",
+  "dueCustomerPhone": "9876543210"
+}
+```
+
 Validation:
 - bill must exist
 - amount > 0
 - no overpayment beyond discounted remaining amount
+- due mode requires customer name + phone
+
+### GET `/api/payment/due-report`
+Returns all pending due entries with customer details and bill linkage.
+
+### GET `/api/customers/search?q=<text>`
+Search customers by name or phone for realtime suggestions.
+
+### POST `/api/payment/receive-due`
+Marks a due entry as received in `cash` / `upi` / `card`.
+
+Body:
+```json
+{
+  "paymentId": 123,
+  "mode": "cash",
+  "amount": 150
+}
+```
 
 ---
 
@@ -165,4 +237,3 @@ Most validation/business failures return:
 ```
 
 Typical status: `400`.
-

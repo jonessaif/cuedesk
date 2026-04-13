@@ -207,19 +207,16 @@ export const billingService = {
 
     const paidAmount = payments.reduce((sum, payment) => sum + payment.amount, 0);
     const remainingBeforeDiscount = bill.totalAmount - paidAmount;
-    if (
-      input.discountType === "fixed" &&
-      typeof input.discountValue === "number" &&
-      input.discountValue > remainingBeforeDiscount
-    ) {
-      throw new Error("Discount exceeds remaining amount");
-    }
 
     const discount = calculateDiscountedAmount(
       bill.totalAmount,
       input.discountType,
       input.discountValue,
     );
+    const effectiveDiscount = roundMoney(Math.max(bill.totalAmount - discount.discountedAmount, 0));
+    if (effectiveDiscount > roundMoney(Math.max(remainingBeforeDiscount, 0))) {
+      throw new Error("Discount exceeds remaining amount");
+    }
 
     if (discount.discountedAmount < paidAmount) {
       throw new Error("Discounted total below paid amount");
@@ -245,10 +242,16 @@ export const billingService = {
       },
     });
 
+    const remainingAmount = Math.max(discount.discountedAmount - paidAmount, 0);
+    const discountAmount = Math.max(bill.totalAmount - discount.discountedAmount, 0);
     return {
       ...(updated as object),
+      subtotal: bill.totalAmount,
+      discount: discountAmount,
+      finalAmount: discount.discountedAmount,
       paidAmount,
-      remainingAmount: Math.max(discount.discountedAmount - paidAmount, 0),
+      remainingAmount,
+      remaining: remainingAmount,
     };
   },
 };

@@ -8,7 +8,9 @@
     "start": "next start -H 0.0.0.0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "backfill:bills": "tsx scripts/backfill-session-bill-links.ts"
+    "backfill:bills": "tsx scripts/backfill-session-bill-links.ts",
+    "backfill:ledger-demo": "tsx scripts/backfill-ledger-preview-data.ts",
+    "backfill:business-day-keys": "tsx scripts/backfill-business-day-keys.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.7.0",

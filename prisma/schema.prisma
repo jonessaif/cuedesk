@@ -19,6 +19,7 @@ model Table {
 model Session {
   id        Int         @id @default(autoincrement())
   tableId   Int
+  businessDayKey String?
   playerName String
   payerMode PayerMode   @default(none)
   payerData Json?
@@ -37,9 +38,26 @@ model Session {
 
   table Table @relation(fields: [tableId], references: [id])
   bill  Bill? @relation(fields: [billId], references: [id])
+  overrideEvents SessionOverrideEvent[]
 
   @@index([tableId, status])
+  @@index([businessDayKey])
   @@map("sessions")
+}
+
+model SessionOverrideEvent {
+  id           Int      @id @default(autoincrement())
+  sessionId    Int
+  action       String   @default("override_update")
+  changedFields Json?
+  beforeData   Json?
+  afterData    Json?
+  createdAt    DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("session_override_events")
 }
 
 model Bill {
@@ -60,11 +78,49 @@ model Payment {
   billId  Int
   mode    PaymentMode
   amount  Float
+  createdAt DateTime @default(now())
+  dueCustomerName String?
+  dueCustomerPhone String?
+  dueSettledAt DateTime?
+  dueReceivedMode PaymentMode?
 
   bill Bill @relation(fields: [billId], references: [id])
 
   @@index([billId])
   @@map("payments")
+}
+
+model DailyReport {
+  id            Int      @id @default(autoincrement())
+  businessDayKey String  @unique
+  startAt       DateTime
+  endAt         DateTime
+  subtotal      Float
+  discount      Float
+  net           Float
+  cash          Float
+  upi           Float
+  card          Float
+  paid          Float
+  unpaid        Float
+  isBalanced    Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([businessDayKey])
+  @@map("daily_reports")
+}
+
+model Customer {
+  id         Int      @id @default(autoincrement())
+  name       String
+  phone      String   @unique
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  lastSeenAt DateTime @default(now())
+
+  @@index([name])
+  @@map("customers")
 }
 
 enum PayerMode {

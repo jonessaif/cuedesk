@@ -1,3 +1,84 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+.theme-dark {
+  background-color: #020617 !important;
+  color: #e2e8f0 !important;
+}
+
+.theme-dark .bg-white {
+  background-color: #0f172a !important;
+}
+
+.theme-dark .bg-slate-50 {
+  background-color: #111827 !important;
+}
+
+.theme-dark .bg-slate-100 {
+  background-color: #1f2937 !important;
+}
+
+.theme-dark .bg-slate-200 {
+  background-color: #334155 !important;
+}
+
+.theme-dark .bg-yellow-100 {
+  background-color: #422006 !important;
+}
+
+.theme-dark .bg-blue-100 {
+  background-color: #172554 !important;
+}
+
+.theme-dark .bg-orange-100 {
+  background-color: #431407 !important;
+}
+
+.theme-dark .bg-green-100 {
+  background-color: #052e16 !important;
+}
+
+.theme-dark .bg-orange-50 {
+  background-color: #3f1d07 !important;
+}
+
+.theme-dark .bg-emerald-50 {
+  background-color: #042f2e !important;
+}
+
+.theme-dark .bg-indigo-50 {
+  background-color: #1e1b4b !important;
+}
+
+.theme-dark .bg-amber-50 {
+  background-color: #451a03 !important;
+}
+
+.theme-dark .text-slate-900 {
+  color: #f8fafc !important;
+}
+
+.theme-dark .text-slate-800 {
+  color: #e2e8f0 !important;
+}
+
+.theme-dark .text-slate-700,
+.theme-dark .text-slate-600,
+.theme-dark .text-slate-500 {
+  color: #cbd5e1 !important;
+}
+
+.theme-dark .border-slate-300,
+.theme-dark .border-slate-200,
+.theme-dark .border-slate-100 {
+  border-color: #334155 !important;
+}
+
+.theme-dark .hover\:bg-slate-100:hover {
+  background-color: #334155 !important;
+}
+
+.theme-dark .hover\:bg-slate-200:hover {
+  background-color: #475569 !important;
+}

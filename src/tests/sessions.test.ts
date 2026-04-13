@@ -161,7 +161,47 @@ describe("Sessions module", () => {
     );
   });
 
-  it("should reject forward override running to billed by state machine", async () => {
+  it("should reject ending session when duration is 0 minutes", async () => {
+    const now = new Date("2026-04-12T10:00:20.000Z");
+    const startTime = new Date("2026-04-12T10:00:00.000Z");
+
+    const findFirst = vi.fn().mockResolvedValue({
+      id: 77,
+      tableId: 7,
+      playerName: "Arjun",
+      status: "running",
+      startTime,
+    });
+
+    const findUnique = vi.fn().mockResolvedValue({
+      id: 7,
+      name: "S1",
+      ratePerMin: 10,
+    });
+
+    const update = vi.fn();
+
+    const prisma = {
+      sessions: {
+        findFirst,
+        update,
+      },
+      tables: {
+        findUnique,
+      },
+    };
+
+    await expect(
+      sessionService.endSession(prisma as never, {
+        tableId: 7,
+        now,
+      }),
+    ).rejects.toThrow("Cannot end session with 0 minutes");
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("should reject running override fields other than start time or rate", async () => {
     const findUniqueSession = vi.fn().mockResolvedValue({
       id: 10,
       tableId: 1,
@@ -199,13 +239,13 @@ describe("Sessions module", () => {
         overrideStatus: "billed",
         overrideEndTime: new Date("2026-04-12T10:30:00.000Z"),
       }),
-    ).rejects.toThrow("Invalid state transition");
+    ).rejects.toThrow("Running overrides allow only start time, rate, or payer details");
 
     expect(createBill).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("should support override completed to running", async () => {
+  it("should support completed override for start/end/rate updates", async () => {
     const findUniqueSession = vi.fn().mockResolvedValue({
       id: 11,
       tableId: 1,
@@ -238,32 +278,72 @@ describe("Sessions module", () => {
 
     await sessionService.overrideSession(prisma as never, {
       sessionId: 11,
-      overrideStatus: "running",
+      overrideRatePerMin: 8,
+      overrideEndTime: new Date("2026-04-12T10:40:00.000Z"),
     });
 
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 11 },
         data: expect.objectContaining({
-          overrideStatus: "running",
-          overrideEndTime: null,
+          overrideRatePerMin: 8,
+          overrideEndTime: new Date("2026-04-12T10:40:00.000Z"),
         }),
       }),
     );
   });
 
-  it("should block billed to completed when payments exist", async () => {
+  it("should support running override payer details", async () => {
     const prisma = {
       sessions: {
         findUnique: vi.fn().mockResolvedValue({
-          id: 20,
+          id: 13,
           tableId: 1,
-          status: "billed",
+          status: "running",
+          startTime: new Date("2026-04-12T10:00:00.000Z"),
+          endTime: null,
+          payerMode: "none",
+          payerData: null,
+          billId: null,
+        }),
+        update: vi.fn().mockResolvedValue({ id: 13, overridePayerMode: "single" }),
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 1,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+      bills: {
+        create: vi.fn(),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    await expect(
+      sessionService.overrideSession(prisma as never, {
+        sessionId: 13,
+        overridePayerMode: "single",
+        overridePayerData: { name: "Saif" },
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("should reject completed override status changes", async () => {
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 12,
+          tableId: 1,
+          status: "completed",
           startTime: new Date("2026-04-12T10:00:00.000Z"),
           endTime: new Date("2026-04-12T10:30:00.000Z"),
           payerMode: "single",
           payerData: { name: "A" },
-          billId: 50,
+          billId: null,
         }),
         update: vi.fn(),
       },
@@ -278,6 +358,227 @@ describe("Sessions module", () => {
         create: vi.fn(),
       },
       payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    await expect(
+      sessionService.overrideSession(prisma as never, {
+        sessionId: 12,
+        overrideStatus: "running",
+      }),
+    ).rejects.toThrow("Completed overrides allow start time, end time, rate, or payer details");
+  });
+
+  it("should move billed session back to unbilled", async () => {
+    const findUniqueSession = vi.fn().mockResolvedValue({
+      id: 31,
+      tableId: 1,
+      status: "billed",
+      startTime: new Date("2026-04-12T10:00:00.000Z"),
+      endTime: new Date("2026-04-12T10:30:00.000Z"),
+      payerMode: "single",
+      payerData: { name: "A" },
+      billId: 77,
+    });
+    const findUniqueTable = vi.fn().mockResolvedValue({
+      id: 1,
+      name: "S1",
+      ratePerMin: 10,
+    });
+    const update = vi.fn().mockResolvedValue({ id: 31, billId: null, status: "completed" });
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
+    const deleteBill = vi.fn().mockResolvedValue({ id: 77 });
+
+    const prisma = {
+      sessions: {
+        findUnique: findUniqueSession,
+        update,
+        updateMany,
+      },
+      tables: {
+        findUnique: findUniqueTable,
+      },
+      bills: {
+        create: vi.fn(),
+        delete: deleteBill,
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany,
+      },
+    };
+
+    await sessionService.overrideSession(prisma as never, {
+      sessionId: 31,
+      overrideStatus: "completed",
+    });
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 31 },
+        data: expect.objectContaining({
+          status: "completed",
+          overrideStatus: "completed",
+          billId: null,
+        }),
+      }),
+    );
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { billId: 77 },
+      data: {
+        billId: null,
+        status: "completed",
+        overrideStatus: null,
+      },
+    });
+    expect(deleteMany).toHaveBeenCalledWith({ where: { billId: 77 } });
+    expect(deleteBill).toHaveBeenCalledWith({ where: { id: 77 } });
+  });
+
+  it("should create override history event when override updates session", async () => {
+    const findUniqueSession = vi.fn().mockResolvedValue({
+      id: 41,
+      tableId: 1,
+      status: "completed",
+      startTime: new Date("2026-04-12T10:00:00.000Z"),
+      endTime: new Date("2026-04-12T10:30:00.000Z"),
+      payerMode: "single",
+      payerData: { name: "A" },
+      billId: null,
+      amount: 300,
+    });
+    const findUniqueTable = vi.fn().mockResolvedValue({
+      id: 1,
+      name: "S1",
+      ratePerMin: 10,
+    });
+    const update = vi.fn().mockResolvedValue({
+      id: 41,
+      status: "completed",
+      billId: null,
+      amount: 280,
+      overrideRatePerMin: 8,
+      overrideStatus: null,
+      overrideStartTime: null,
+      overrideEndTime: null,
+      overridePayerMode: null,
+      overridePayerData: null,
+      overridePaymentModes: null,
+    });
+    const createHistory = vi.fn().mockResolvedValue({ id: 1 });
+
+    const prisma = {
+      sessions: {
+        findUnique: findUniqueSession,
+        update,
+      },
+      tables: {
+        findUnique: findUniqueTable,
+      },
+      bills: {
+        create: vi.fn(),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      sessionOverrideEvents: {
+        create: createHistory,
+      },
+    };
+
+    await sessionService.overrideSession(prisma as never, {
+      sessionId: 41,
+      overrideRatePerMin: 8,
+    });
+
+    expect(createHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sessionId: 41,
+          action: "override_update",
+        }),
+      }),
+    );
+  });
+
+  it("should return override history with timestamps", async () => {
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 55,
+          startTime: null,
+          endTime: null,
+          status: "running",
+          billId: null,
+          amount: 0,
+        }),
+      },
+      sessionOverrideEvents: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: 1,
+            action: "override_update",
+            changedFields: ["overrideRatePerMin"],
+            beforeData: { overrideRatePerMin: null },
+            afterData: { overrideRatePerMin: 8 },
+            createdAt: new Date("2026-04-12T12:00:00.000Z"),
+          },
+        ]),
+      },
+    };
+
+    const result = await sessionService.getSessionOverrideHistory(prisma as never, {
+      sessionId: 55,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: 1,
+      action: "override_update",
+      actionLabel: "Override Updated",
+      changedBy: "System",
+      diffs: [{ field: "overrideRatePerMin", before: null, after: 8 }],
+    });
+    expect(result[0].createdAt).toBeInstanceOf(Date);
+  });
+
+  it("should block paid session from moving to unbilled", async () => {
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 20,
+          tableId: 1,
+          status: "billed",
+          startTime: new Date("2026-04-12T10:00:00.000Z"),
+          endTime: new Date("2026-04-12T10:30:00.000Z"),
+          payerMode: "single",
+          payerData: { name: "A" },
+          billId: 50,
+        }),
+        findMany: vi.fn().mockResolvedValue([
+          { amount: 10 },
+        ]),
+        update: vi.fn(),
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 1,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+      bills: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 50,
+          totalAmount: 10,
+          discountedAmount: 10,
+          discountType: null,
+        }),
+        create: vi.fn(),
+      },
+      payments: {
         findMany: vi.fn().mockResolvedValue([{ amount: 10 }]),
       },
     };
@@ -287,10 +588,11 @@ describe("Sessions module", () => {
         sessionId: 20,
         overrideStatus: "completed",
       }),
-    ).rejects.toThrow("Cannot move billed session to completed when payments exist");
+    ).rejects.toThrow("Paid session can only be moved back to billed");
   });
 
-  it("should require admin override for paid to billed", async () => {
+  it("should move paid session back to billed and clear payments", async () => {
+    const deleteMany = vi.fn().mockResolvedValue({ count: 2 });
     const basePrisma = {
       sessions: {
         findUnique: vi.fn().mockResolvedValue({
@@ -303,6 +605,9 @@ describe("Sessions module", () => {
           payerData: { name: "A" },
           billId: 51,
         }),
+        findMany: vi.fn().mockResolvedValue([
+          { amount: 140 },
+        ]),
         update: vi.fn().mockResolvedValue({ id: 21 }),
       },
       tables: {
@@ -313,10 +618,20 @@ describe("Sessions module", () => {
         }),
       },
       bills: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 51,
+          totalAmount: 140,
+          discountedAmount: 140,
+          discountType: null,
+        }),
         create: vi.fn(),
       },
       payments: {
-        findMany: vi.fn().mockResolvedValue([{ amount: 120 }]),
+        findMany: vi.fn().mockResolvedValue([
+          { id: 1, billId: 51, amount: 120, mode: "cash" },
+          { id: 2, billId: 51, amount: 20, mode: "upi" },
+        ]),
+        deleteMany,
       },
     };
 
@@ -325,14 +640,8 @@ describe("Sessions module", () => {
         sessionId: 21,
         overrideStatus: "billed",
       }),
-    ).rejects.toThrow("Invalid state transition");
-
-    await expect(
-      sessionService.overrideSession(basePrisma as never, {
-        sessionId: 21,
-        overrideStatus: "billed",
-        adminOverride: true,
-      }),
     ).resolves.toBeDefined();
+
+    expect(deleteMany).toHaveBeenCalledWith({ where: { billId: 51 } });
   });
 });

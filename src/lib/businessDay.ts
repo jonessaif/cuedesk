@@ -1,0 +1,42 @@
+export type BusinessDayRange = {
+  key: string;
+  start: Date;
+  end: Date;
+};
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+export function getBusinessDayRange(now: Date): BusinessDayRange {
+  const anchor = new Date(now);
+  if (Number.isNaN(anchor.getTime())) {
+    throw new Error("Invalid date");
+  }
+
+  const start = new Date(anchor);
+  start.setHours(10, 0, 0, 0);
+  if (anchor.getTime() < start.getTime()) {
+    start.setDate(start.getDate() - 1);
+  }
+
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  const key = `${start.getFullYear()}-${pad2(start.getMonth() + 1)}-${pad2(start.getDate())}`;
+  return { key, start, end };
+}
+
+export function getBusinessDayRangeFromKey(key: string): BusinessDayRange {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+    throw new Error("Invalid date");
+  }
+  const [yearRaw, monthRaw, dayRaw] = key.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  const start = new Date(year, month - 1, day, 10, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { key, start, end };
+}

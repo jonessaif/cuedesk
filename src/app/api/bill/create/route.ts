@@ -76,8 +76,12 @@ export async function POST(request: Request) {
     return Response.json(
       {
         ...result,
+        subtotal: result.totalAmount,
+        discount: Math.max(result.totalAmount - result.discountedAmount, 0),
+        finalAmount: result.discountedAmount,
         paidAmount: 0,
         remainingAmount: result.discountedAmount,
+        remaining: result.discountedAmount,
       },
       { status: 200 },
     );

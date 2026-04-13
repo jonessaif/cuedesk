@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { getEffectiveBillTotals } from "@/lib/billTotals";
+import { getCollectedPaidAmount, getEffectiveBillTotals } from "@/lib/billTotals";
 
 export async function GET() {
   try {
@@ -15,6 +15,10 @@ export async function GET() {
           select: {
             amount: true,
             mode: true,
+            dueCustomerName: true,
+            dueCustomerPhone: true,
+            dueSettledAt: true,
+            dueReceivedMode: true,
           },
         },
       },
@@ -22,7 +26,13 @@ export async function GET() {
 
     const data = bills
       .map((bill) => {
-        const paidAmount = bill.payments.reduce((sum, payment) => sum + payment.amount, 0);
+        const paidAmount = getCollectedPaidAmount(
+          bill.payments.map((payment) => ({
+            amount: payment.amount,
+            mode: payment.mode,
+            dueSettledAt: payment.dueSettledAt,
+          })),
+        );
         const sessionsAmount = bill.sessions.reduce(
           (sum, session) => sum + (typeof session.amount === "number" ? session.amount : 0),
           0,
@@ -37,15 +47,23 @@ export async function GET() {
 
         return {
           id: bill.id,
+          subtotal: totals.subtotal,
+          discount: totals.discount,
+          finalAmount: totals.finalAmount,
           totalAmount: totals.totalAmount,
           discountType: bill.discountType,
           discountValue: bill.discountValue,
           discountedAmount: totals.discountedAmount,
           paidAmount: totals.paidAmount,
           remainingAmount: totals.remainingAmount,
+          remaining: totals.remaining,
           payments: bill.payments.map((payment) => ({
             mode: payment.mode,
             amount: payment.amount,
+            dueCustomerName: payment.dueCustomerName,
+            dueCustomerPhone: payment.dueCustomerPhone,
+            dueSettledAt: payment.dueSettledAt,
+            dueReceivedMode: payment.dueReceivedMode,
           })),
         };
       })

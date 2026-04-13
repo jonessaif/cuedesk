@@ -1,4 +1,5 @@
 import { getEffectiveBillTotals, roundMoney } from "@/lib/billTotals";
+import { getBusinessDayRange, getBusinessDayRangeFromKey } from "@/lib/businessDay";
 import {
   getEffectiveStatus,
   getLedgerStatus,
@@ -191,6 +192,189 @@ function deriveLedgerState(input: {
   });
 }
 
+function derivePaymentSplit(
+  payments: Array<{
+    amount: number;
+    mode: "cash" | "upi" | "card" | "due";
+  }>,
+): Array<{
+  mode: "cash" | "upi" | "card" | "due";
+  amount: number;
+}> {
+  if (payments.length === 0) {
+    return [];
+  }
+
+  const totals: Record<"cash" | "upi" | "card" | "due", number> = {
+    cash: 0,
+    upi: 0,
+    card: 0,
+    due: 0,
+  };
+
+  for (const payment of payments) {
+    totals[payment.mode] += payment.amount;
+  }
+
+  const order: Array<"cash" | "upi" | "card" | "due"> = ["cash", "upi", "card", "due"];
+  return order
+    .map((mode) => ({ mode, amount: roundMoney(totals[mode]) }))
+    .filter((entry) => entry.amount > 0);
+}
+
+function distributeProportionally(
+  total: number,
+  weights: Array<{ id: number; weight: number }>,
+): Map<number, number> {
+  const normalizedTotal = roundMoney(Math.max(total, 0));
+  const validWeights = weights.filter((entry) => entry.weight > 0);
+  const result = new Map<number, number>();
+  if (normalizedTotal <= 0 || validWeights.length === 0) {
+    for (const entry of weights) {
+      result.set(entry.id, 0);
+    }
+    return result;
+  }
+
+  const weightSum = validWeights.reduce((sum, entry) => sum + entry.weight, 0);
+  let assigned = 0;
+  for (let index = 0; index < validWeights.length; index += 1) {
+    const entry = validWeights[index];
+    let share = 0;
+    if (index === validWeights.length - 1) {
+      share = roundMoney(normalizedTotal - assigned);
+    } else {
+      share = roundMoney((entry.weight / weightSum) * normalizedTotal);
+      assigned = roundMoney(assigned + share);
+    }
+    result.set(entry.id, share);
+  }
+
+  for (const entry of weights) {
+    if (!result.has(entry.id)) {
+      result.set(entry.id, 0);
+    }
+  }
+
+  return result;
+}
+
+type SessionOverrideAuditSource = {
+  status: "running" | "completed" | "billed";
+  billId: number | null;
+  amount?: number | null;
+  overrideStartTime?: Date | null;
+  overrideEndTime?: Date | null;
+  overrideRatePerMin?: number | null;
+  overridePayerMode?: string | null;
+  overridePayerData?: unknown;
+  overrideStatus?: string | null;
+  overridePaymentModes?: unknown;
+};
+
+type AuditDiffEntry = {
+  field: string;
+  before: unknown;
+  after: unknown;
+};
+
+function toIso(value: Date | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  return value.toISOString();
+}
+
+function buildOverrideAuditSnapshot(session: SessionOverrideAuditSource) {
+  return {
+    status: session.status,
+    billId: session.billId,
+    amount: typeof session.amount === "number" ? roundMoney(session.amount) : 0,
+    overrideStartTime: toIso(session.overrideStartTime),
+    overrideEndTime: toIso(session.overrideEndTime),
+    overrideRatePerMin: session.overrideRatePerMin ?? null,
+    overridePayerMode: session.overridePayerMode ?? null,
+    overridePayerData: session.overridePayerData ?? null,
+    overrideStatus: session.overrideStatus ?? null,
+    overridePaymentModes: normalizeOverridePaymentModes(session.overridePaymentModes),
+  };
+}
+
+function buildAuditDiffEntries(
+  beforeSnapshot: Record<string, unknown>,
+  afterSnapshot: Record<string, unknown>,
+): AuditDiffEntry[] {
+  const keys = Array.from(new Set([
+    ...Object.keys(beforeSnapshot),
+    ...Object.keys(afterSnapshot),
+  ]));
+  return keys
+    .filter((key) => JSON.stringify(beforeSnapshot[key]) !== JSON.stringify(afterSnapshot[key]))
+    .map((key) => ({
+      field: key,
+      before: beforeSnapshot[key],
+      after: afterSnapshot[key],
+    }));
+}
+
+function toHistoryActionLabel(action: string): string {
+  if (action === "session_started") {
+    return "Session Started";
+  }
+  if (action === "session_ended") {
+    return "Session Ended";
+  }
+  if (action === "bill_created") {
+    return "Bill Created";
+  }
+  if (action === "payment_recorded") {
+    return "Payment Settled";
+  }
+  if (action === "due_settled") {
+    return "Payment Settled";
+  }
+  if (action === "override_update") {
+    return "Override Updated";
+  }
+  return action.replaceAll("_", " ");
+}
+
+function toBusinessDayStart(input: Date): Date {
+  return getBusinessDayRange(input).start;
+}
+
+function toBusinessDayKeyFromDate(input: Date): string {
+  return getBusinessDayRange(input).key;
+}
+
+function toBusinessDayWindowFromKey(key: string): { start: Date; end: Date } {
+  const range = getBusinessDayRangeFromKey(key);
+  return { start: range.start, end: range.end };
+}
+
+function normalizeDayKeyInput(dateInput: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+    throw new Error("Invalid date");
+  }
+  return dateInput;
+}
+
+function normalizeRangeInput(
+  startDateInput: string | undefined,
+  endDateInput: string | undefined,
+): { startDate: string; endDate: string } {
+  if (!startDateInput || !endDateInput) {
+    throw new Error("Start date and end date are required");
+  }
+
+  const startDate = normalizeDayKeyInput(startDateInput);
+  const endDate = normalizeDayKeyInput(endDateInput);
+  if (startDate > endDate) {
+    throw new Error("Invalid date range");
+  }
+  return { startDate, endDate };
+}
+
 export const sessionService = {
   async startSession(
     prisma: unknown,
@@ -214,11 +398,14 @@ export const sessionService = {
       throw new Error("Session already running");
     }
 
+    const now = new Date();
+
     return (
       sessionModel as {
         create: (args: {
           data: {
             tableId: number;
+            businessDayKey: string;
             playerName: string;
             status: string;
             startTime: Date;
@@ -228,9 +415,10 @@ export const sessionService = {
     ).create({
       data: {
         tableId: input.tableId,
+        businessDayKey: toBusinessDayKeyFromDate(now),
         playerName: input.playerName,
         status: "running",
-        startTime: new Date(),
+        startTime: now,
       },
     });
   },
@@ -283,6 +471,9 @@ export const sessionService = {
     const effectiveEndTime = input.now;
     const effectiveRatePerMin = getEffectiveRatePerMin(session, table.ratePerMin);
     const durationMinutes = calculateDurationMinutes(effectiveStartTime, effectiveEndTime);
+    if (durationMinutes <= 0) {
+      throw new Error("Cannot end session with 0 minutes");
+    }
     const amount = calculateAmount(
       effectiveStartTime,
       effectiveEndTime,
@@ -325,6 +516,7 @@ export const sessionService = {
       overrideStatus?: "running" | "completed" | "billed" | "default";
       overridePaymentModes?: Array<"cash" | "upi" | "card" | "due"> | null;
       adminOverride?: boolean;
+      changedBy?: string;
     },
   ) {
     const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
@@ -335,6 +527,14 @@ export const sessionService = {
       (prisma as { bill?: unknown; bills?: unknown }).bills;
     const paymentModel = (prisma as { payment?: unknown; payments?: unknown }).payment ??
       (prisma as { payment?: unknown; payments?: unknown }).payments;
+    const overrideEventModel = (prisma as {
+      sessionOverrideEvent?: unknown;
+      sessionOverrideEvents?: unknown;
+    }).sessionOverrideEvent ??
+      (prisma as {
+        sessionOverrideEvent?: unknown;
+        sessionOverrideEvents?: unknown;
+      }).sessionOverrideEvents;
 
     const session = (await (
       sessionModel as {
@@ -358,6 +558,8 @@ export const sessionService = {
       overrideStatus?: string | null;
       overridePaymentModes?: unknown;
       billId: number | null;
+      amount?: number | null;
+      businessDayKey?: string | null;
     } | null;
 
     if (!session) {
@@ -377,13 +579,71 @@ export const sessionService = {
     const existingPayments = session.billId
       ? await (
         paymentModel as {
-          findMany: (args: { where: { billId: number } }) => Promise<Array<{ amount: number }>>;
+          findMany: (args: {
+            where: { billId: number };
+          }) => Promise<Array<{
+            id?: number;
+            billId?: number;
+            amount: number;
+            mode?: "cash" | "upi" | "card" | "due";
+            dueCustomerName?: string | null;
+            dueCustomerPhone?: string | null;
+            dueSettledAt?: Date | null;
+            dueReceivedMode?: "cash" | "upi" | "card" | "due" | null;
+          }>>;
         }
       ).findMany({
         where: { billId: session.billId },
       })
       : [];
     const existingPaidAmount = existingPayments.reduce((sum, payment) => sum + payment.amount, 0);
+    const lifecycleBillTotal = session.billId &&
+      (billModel as { findUnique?: unknown }).findUnique &&
+      (sessionModel as { findMany?: unknown }).findMany
+      ? await (async () => {
+        const bill = await (
+          billModel as {
+            findUnique: (args: {
+              where: { id: number };
+              select: { id: true; totalAmount: true; discountedAmount: true; discountType: true };
+            }) => Promise<{
+              id: number;
+              totalAmount: number;
+              discountedAmount: number;
+              discountType: string | null;
+            } | null>;
+          }
+        ).findUnique({
+          where: { id: session.billId },
+          select: { id: true, totalAmount: true, discountedAmount: true, discountType: true },
+        });
+        if (!bill) {
+          return 0;
+        }
+        const billSessions = await (
+          sessionModel as {
+            findMany: (args: {
+              where: { billId: number };
+              select: { amount: true };
+            }) => Promise<Array<{ amount: number | null }>>;
+          }
+        ).findMany({
+          where: { billId: session.billId },
+          select: { amount: true },
+        });
+        const sessionsAmount = roundMoney(billSessions.reduce(
+          (sum, row) => sum + (typeof row.amount === "number" ? row.amount : 0),
+          0,
+        ));
+        return getEffectiveBillTotals({
+          totalAmount: bill.totalAmount,
+          discountType: bill.discountType,
+          discountedAmount: bill.discountedAmount,
+          sessionsAmount,
+          paidAmount: existingPaidAmount,
+        }).discountedAmount;
+      })()
+      : 0;
 
     const effectiveStatus = getEffectiveSessionStatus({
       status: session.status,
@@ -400,6 +660,7 @@ export const sessionService = {
       }),
       billId: session.billId,
       paidAmount: existingPaidAmount,
+      billedAmount: lifecycleBillTotal,
     });
     const requestedLifecycleState: LifecycleState | undefined =
       input.overrideStatus === "running"
@@ -414,19 +675,60 @@ export const sessionService = {
         status: effectiveStatus,
         billId: session.billId,
         paidAmount: existingPaidAmount,
+        billedAmount: lifecycleBillTotal,
       });
-    if (!canTransition(currentLifecycleState, nextLifecycleState)) {
-      throw new Error("Invalid state transition");
+    const hasOverrideStart = input.overrideStartTime !== undefined;
+    const hasOverrideEnd = input.overrideEndTime !== undefined;
+    const hasOverrideRate = input.overrideRatePerMin !== undefined;
+    const hasOverridePayer = input.overridePayerMode !== undefined || input.overridePayerData !== undefined;
+    const hasOverrideStatus = input.overrideStatus !== undefined && input.overrideStatus !== "default";
+    const hasOverridePaymentModes = input.overridePaymentModes !== undefined;
+
+    if (currentLifecycleState === "Running") {
+      if (hasOverrideEnd || hasOverrideStatus || hasOverridePaymentModes) {
+        throw new Error("Running overrides allow only start time, rate, or payer details");
+      }
+      if (!hasOverrideStart && !hasOverrideRate && !hasOverridePayer) {
+        throw new Error("No allowed override fields for running session");
+      }
     }
 
-    if (requestedLifecycleState === "Completed" && isBilled({ billId: session.billId }) && existingPaidAmount > 0) {
-      throw new Error("Cannot move billed session to completed when payments exist");
+    if (currentLifecycleState === "Completed") {
+      if (hasOverrideStatus || hasOverridePaymentModes) {
+        throw new Error("Completed overrides allow start time, end time, rate, or payer details");
+      }
+      if (!hasOverrideStart && !hasOverrideEnd && !hasOverrideRate && !hasOverridePayer) {
+        throw new Error("No allowed override fields for completed session");
+      }
     }
-    if (
-      currentLifecycleState === "Paid" &&
-      nextLifecycleState === "Billed" &&
-      !input.adminOverride
-    ) {
+
+    if (currentLifecycleState === "Billed") {
+      if (
+        input.overrideStatus !== "completed" ||
+        hasOverrideStart ||
+        hasOverrideEnd ||
+        hasOverrideRate ||
+        hasOverridePayer ||
+        hasOverridePaymentModes
+      ) {
+        throw new Error("Billed session can only be moved back to unbilled");
+      }
+    }
+
+    if (currentLifecycleState === "Paid") {
+      if (
+        input.overrideStatus !== "billed" ||
+        hasOverrideStart ||
+        hasOverrideEnd ||
+        hasOverrideRate ||
+        hasOverridePayer ||
+        hasOverridePaymentModes
+      ) {
+        throw new Error("Paid session can only be moved back to billed");
+      }
+    }
+
+    if (!canTransition(currentLifecycleState, nextLifecycleState)) {
       throw new Error("Invalid state transition");
     }
 
@@ -434,6 +736,7 @@ export const sessionService = {
       input.overrideStartTime ??
       session.overrideStartTime ??
       session.startTime;
+    const nextBusinessDayKey = toBusinessDayKeyFromDate(effectiveStartTime);
     const effectiveEndTime =
       effectiveStatus === "running"
         ? null
@@ -490,7 +793,21 @@ export const sessionService = {
       table.name,
     );
 
+    const shouldCancelOldBill = Boolean(
+      currentLifecycleState === "Billed" &&
+      requestedLifecycleState === "Completed" &&
+      typeof session.billId === "number",
+    );
+
     let nextBillId = session.billId;
+    if (requestedLifecycleState === "Running") {
+      // Returning a session to running means it should re-enter unbilled flow.
+      nextBillId = null;
+    }
+    if (shouldCancelOldBill) {
+      nextBillId = null;
+    }
+
     if (effectiveStatus === "billed" && !isBilled({ billId: nextBillId })) {
       const createdBill = await (
         billModel as {
@@ -514,7 +831,40 @@ export const sessionService = {
       nextBillId = createdBill.id;
     }
 
-    return (
+    const beforeAuditSnapshot = buildOverrideAuditSnapshot({
+      status: session.status,
+      billId: session.billId,
+      amount: session.amount ?? 0,
+      overrideStartTime: session.overrideStartTime ?? null,
+      overrideEndTime: session.overrideEndTime ?? null,
+      overrideRatePerMin: session.overrideRatePerMin ?? null,
+      overridePayerMode: session.overridePayerMode ?? null,
+      overridePayerData: session.overridePayerData ?? null,
+      overrideStatus: session.overrideStatus ?? null,
+      overridePaymentModes: session.overridePaymentModes,
+    });
+    const paymentHistorySnapshot = existingPayments.map((payment) => ({
+      id: payment.id ?? null,
+      billId: payment.billId ?? session.billId,
+      amount: payment.amount,
+      mode: payment.mode ?? null,
+      dueCustomerName: payment.dueCustomerName ?? null,
+      dueCustomerPhone: payment.dueCustomerPhone ?? null,
+      dueSettledAt: payment.dueSettledAt ? payment.dueSettledAt.toISOString() : null,
+      dueReceivedMode: payment.dueReceivedMode ?? null,
+    }));
+
+    if (currentLifecycleState === "Paid" && requestedLifecycleState === "Billed" && session.billId) {
+      await (
+        paymentModel as {
+          deleteMany: (args: { where: { billId: number } }) => Promise<unknown>;
+        }
+      ).deleteMany({
+        where: { billId: session.billId },
+      });
+    }
+
+    const updatedSession = await (
       sessionModel as {
         update: (args: {
           where: { id: number };
@@ -527,6 +877,7 @@ export const sessionService = {
             overrideStatus?: string | null;
             overridePaymentModes?: unknown;
             billId?: number | null;
+            businessDayKey?: string;
             amount: number;
           };
         }) => Promise<unknown>;
@@ -552,12 +903,405 @@ export const sessionService = {
           ? { overridePaymentModes: input.overridePaymentModes }
           : {}),
         ...(nextBillId !== session.billId ? { billId: nextBillId } : {}),
+        ...(nextBusinessDayKey !== session.businessDayKey
+          ? { businessDayKey: nextBusinessDayKey }
+          : {}),
         ...(effectiveStatus === "running" ? { overrideEndTime: null } : {}),
         ...((input.overrideStatus !== undefined && input.overrideStatus !== "default")
           ? { status: toSessionStatus(nextLifecycleState) }
           : {}),
         amount,
       },
+    });
+
+    const updatedSessionRow = updatedSession as {
+      status: "running" | "completed" | "billed";
+      billId: number | null;
+      amount: number | null;
+      overrideStartTime?: Date | null;
+      overrideEndTime?: Date | null;
+      overrideRatePerMin?: number | null;
+      overridePayerMode?: string | null;
+      overridePayerData?: unknown;
+      overrideStatus?: string | null;
+      overridePaymentModes?: unknown;
+    };
+
+    if (shouldCancelOldBill && session.billId) {
+      await (
+        sessionModel as {
+          updateMany: (args: {
+            where: { billId: number };
+            data: { billId: null; status: "completed"; overrideStatus: null };
+          }) => Promise<unknown>;
+        }
+      ).updateMany({
+        where: { billId: session.billId },
+        data: {
+          billId: null,
+          status: "completed",
+          overrideStatus: null,
+        },
+      });
+
+      await (
+        paymentModel as {
+          deleteMany: (args: { where: { billId: number } }) => Promise<unknown>;
+        }
+      ).deleteMany({
+        where: { billId: session.billId },
+      });
+
+      await (
+        billModel as {
+          delete: (args: { where: { id: number } }) => Promise<unknown>;
+        }
+      ).delete({
+        where: { id: session.billId },
+      });
+    }
+
+    const afterAuditSnapshot = buildOverrideAuditSnapshot(updatedSessionRow);
+    const beforeAuditData = {
+      ...beforeAuditSnapshot,
+      payments: paymentHistorySnapshot,
+    };
+    const afterAuditData = {
+      ...afterAuditSnapshot,
+      payments:
+        currentLifecycleState === "Paid" && requestedLifecycleState === "Billed"
+          ? []
+          : paymentHistorySnapshot,
+      changedBy: input.changedBy?.trim() || "Operator",
+    };
+    const diffEntries = buildAuditDiffEntries(beforeAuditData, afterAuditData);
+
+    if (diffEntries.length > 0 && overrideEventModel) {
+      await (
+        overrideEventModel as {
+          create: (args: {
+            data: {
+              sessionId: number;
+              action: string;
+              changedFields: unknown;
+              beforeData: unknown;
+              afterData: unknown;
+            };
+          }) => Promise<unknown>;
+        }
+      ).create({
+        data: {
+          sessionId: session.id,
+          action: "override_update",
+          changedFields: diffEntries,
+          beforeData: beforeAuditData,
+          afterData: afterAuditData,
+        },
+      });
+    }
+
+    return updatedSession;
+  },
+
+  async getSessionOverrideHistory(
+    prisma: unknown,
+    input: { sessionId: number },
+  ) {
+    const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
+      (prisma as { session?: unknown; sessions?: unknown }).sessions;
+    const overrideEventModel = (prisma as {
+      sessionOverrideEvent?: unknown;
+      sessionOverrideEvents?: unknown;
+    }).sessionOverrideEvent ??
+      (prisma as {
+        sessionOverrideEvent?: unknown;
+        sessionOverrideEvents?: unknown;
+      }).sessionOverrideEvents;
+
+    const session = await (
+      sessionModel as {
+        findUnique: (args: {
+          where: { id: number };
+          select: {
+            id: true;
+            startTime: true;
+            endTime: true;
+            status: true;
+            billId: true;
+            amount: true;
+          };
+        }) => Promise<{
+          id: number;
+          startTime?: Date;
+          endTime?: Date | null;
+          status?: "running" | "completed" | "billed";
+          billId?: number | null;
+          amount?: number | null;
+        } | null>;
+      }
+    ).findUnique({
+      where: { id: input.sessionId },
+      select: {
+        id: true,
+        startTime: true,
+        endTime: true,
+        status: true,
+        billId: true,
+        amount: true,
+      },
+    });
+
+    if (!session) {
+      throw new Error("Session not found");
+    }
+
+    const rows = overrideEventModel
+      ? await (
+        overrideEventModel as {
+          findMany: (args: {
+            where: { sessionId: number };
+            orderBy: { createdAt: "desc" };
+            select: {
+              id: true;
+              action: true;
+              changedFields: true;
+              beforeData: true;
+              afterData: true;
+              createdAt: true;
+            };
+          }) => Promise<
+            Array<{
+              id: number;
+              action: string;
+              changedFields: unknown;
+              beforeData: unknown;
+              afterData: unknown;
+              createdAt: Date;
+            }>
+          >;
+        }
+      ).findMany({
+        where: { sessionId: input.sessionId },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          action: true,
+          changedFields: true,
+          beforeData: true,
+          afterData: true,
+          createdAt: true,
+        },
+      })
+      : [];
+
+    const timeline = rows.map((row) => {
+      const changedBy = (
+        row.afterData &&
+        typeof row.afterData === "object" &&
+        typeof (row.afterData as { changedBy?: unknown }).changedBy === "string"
+      )
+        ? ((row.afterData as { changedBy: string }).changedBy || "System")
+        : "System";
+
+      const diffs: AuditDiffEntry[] = Array.isArray(row.changedFields)
+        ? row.changedFields
+          .map((entry) => {
+            if (
+              entry &&
+              typeof entry === "object" &&
+              typeof (entry as { field?: unknown }).field === "string"
+            ) {
+              return {
+                field: (entry as { field: string }).field,
+                before: (entry as { before?: unknown }).before,
+                after: (entry as { after?: unknown }).after,
+              } satisfies AuditDiffEntry;
+            }
+            if (typeof entry === "string") {
+              return {
+                field: entry,
+                before:
+                  row.beforeData && typeof row.beforeData === "object"
+                    ? (row.beforeData as Record<string, unknown>)[entry]
+                    : undefined,
+                after:
+                  row.afterData && typeof row.afterData === "object"
+                    ? (row.afterData as Record<string, unknown>)[entry]
+                    : undefined,
+              } satisfies AuditDiffEntry;
+            }
+            return null;
+          })
+          .filter((entry): entry is AuditDiffEntry => entry !== null)
+        : [];
+
+      return {
+        id: row.id,
+        action: row.action,
+        actionLabel: toHistoryActionLabel(row.action),
+        changedBy,
+        diffs,
+        createdAt: row.createdAt,
+      };
+    });
+
+    let syntheticId = -1;
+    const synthetic: Array<{
+      id: number;
+      action: string;
+      actionLabel: string;
+      changedBy: string;
+      diffs: AuditDiffEntry[];
+      createdAt: Date;
+    }> = [];
+
+    if (session.startTime instanceof Date) {
+      synthetic.push({
+        id: syntheticId--,
+        action: "session_started",
+        actionLabel: toHistoryActionLabel("session_started"),
+        changedBy: "System",
+        diffs: [
+          { field: "status", before: "free", after: "running" },
+          { field: "startTime", before: null, after: session.startTime.toISOString() },
+        ],
+        createdAt: session.startTime,
+      });
+    }
+
+    if (session.endTime instanceof Date) {
+      synthetic.push({
+        id: syntheticId--,
+        action: "session_ended",
+        actionLabel: toHistoryActionLabel("session_ended"),
+        changedBy: "System",
+        diffs: [
+          { field: "status", before: "running", after: session.status ?? "completed" },
+          { field: "endTime", before: null, after: session.endTime.toISOString() },
+          { field: "amount", before: null, after: typeof session.amount === "number" ? session.amount : 0 },
+        ],
+        createdAt: session.endTime,
+      });
+    }
+
+    if (typeof session.billId === "number") {
+      const billModel = (prisma as { bill?: unknown; bills?: unknown }).bill ??
+        (prisma as { bill?: unknown; bills?: unknown }).bills;
+      const paymentModel = (prisma as { payment?: unknown; payments?: unknown }).payment ??
+        (prisma as { payment?: unknown; payments?: unknown }).payments;
+
+      const bill = await (
+        billModel as {
+          findUnique: (args: {
+            where: { id: number };
+            select: { id: true; createdAt: true; totalAmount: true; discountedAmount: true };
+          }) => Promise<{
+            id: number;
+            createdAt: Date;
+            totalAmount: number;
+            discountedAmount: number;
+          } | null>;
+        }
+      ).findUnique({
+        where: { id: session.billId },
+        select: { id: true, createdAt: true, totalAmount: true, discountedAmount: true },
+      });
+
+      if (bill) {
+        synthetic.push({
+          id: syntheticId--,
+          action: "bill_created",
+          actionLabel: toHistoryActionLabel("bill_created"),
+          changedBy: "System",
+          diffs: [
+            { field: "status", before: "completed", after: "billed" },
+            { field: "billId", before: null, after: bill.id },
+            { field: "totalAmount", before: null, after: bill.totalAmount },
+            {
+              field: "discount",
+              before: null,
+              after: roundMoney(Math.max(bill.totalAmount - bill.discountedAmount, 0)),
+            },
+            { field: "discountedAmount", before: null, after: bill.discountedAmount },
+          ],
+          createdAt: bill.createdAt,
+        });
+
+        const billPayments = await (
+          paymentModel as {
+            findMany: (args: {
+              where: { billId: number };
+              orderBy: { id: "asc" };
+              select: {
+                id: true;
+                amount: true;
+                mode: true;
+                dueCustomerName: true;
+                dueCustomerPhone: true;
+                dueSettledAt: true;
+                dueReceivedMode: true;
+              };
+            }) => Promise<Array<{
+              id: number;
+              amount: number;
+              mode: string;
+              dueCustomerName: string | null;
+              dueCustomerPhone: string | null;
+              dueSettledAt: Date | null;
+              dueReceivedMode: string | null;
+            }>>;
+          }
+        ).findMany({
+          where: { billId: session.billId },
+          orderBy: { id: "asc" },
+          select: {
+            id: true,
+            amount: true,
+            mode: true,
+            dueCustomerName: true,
+            dueCustomerPhone: true,
+            dueSettledAt: true,
+            dueReceivedMode: true,
+          },
+        });
+
+        for (const payment of billPayments) {
+          synthetic.push({
+            id: syntheticId--,
+            action: payment.mode === "due" && payment.dueSettledAt ? "due_settled" : "payment_recorded",
+            actionLabel: toHistoryActionLabel(
+              payment.mode === "due" && payment.dueSettledAt ? "due_settled" : "payment_recorded",
+            ),
+            changedBy: "System",
+            diffs: [
+              {
+                field: "payments",
+                before: [],
+                after: [{
+                  id: payment.id,
+                  amount: payment.amount,
+                  mode: payment.mode,
+                  dueCustomerName: payment.dueCustomerName,
+                  dueCustomerPhone: payment.dueCustomerPhone,
+                  dueSettledAt: payment.dueSettledAt
+                    ? payment.dueSettledAt.toISOString()
+                    : null,
+                  dueReceivedMode: payment.dueReceivedMode,
+                }],
+              },
+            ],
+            createdAt: payment.dueSettledAt ?? bill.createdAt,
+          });
+        }
+      }
+    }
+
+    return [...timeline, ...synthetic].sort((a, b) => {
+      const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
+      if (timeDiff !== 0) {
+        return timeDiff;
+      }
+      return b.id - a.id;
     });
   },
 
@@ -661,13 +1405,24 @@ export const sessionService = {
     } => row !== null);
   },
 
-  async getAllSessions(prisma: unknown) {
+  async getAllSessions(
+    prisma: unknown,
+    input?: {
+      scope?: "current" | "day" | "range";
+      now?: Date;
+      date?: string;
+      startDate?: string;
+      endDate?: string;
+    },
+  ) {
     const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
       (prisma as { session?: unknown; sessions?: unknown }).sessions;
     const billModel = (prisma as { bill?: unknown; bills?: unknown }).bill ??
       (prisma as { bill?: unknown; bills?: unknown }).bills;
     const paymentModel = (prisma as { payment?: unknown; payments?: unknown }).payment ??
       (prisma as { payment?: unknown; payments?: unknown }).payments;
+    const dailyReportModel = (prisma as { dailyReport?: unknown; dailyReports?: unknown }).dailyReport ??
+      (prisma as { dailyReport?: unknown; dailyReports?: unknown }).dailyReports;
 
     const rows = (await (
       sessionModel as {
@@ -682,6 +1437,7 @@ export const sessionService = {
             playerName: string;
             startTime: Date;
             endTime: Date | null;
+            businessDayKey?: string | null;
             status: "running" | "completed" | "billed";
             billId: number | null;
             amount: number | null;
@@ -708,6 +1464,7 @@ export const sessionService = {
       playerName: string;
       startTime: Date;
       endTime: Date | null;
+      businessDayKey?: string | null;
       status: "running" | "completed" | "billed";
       billId: number | null;
       amount: number | null;
@@ -736,7 +1493,14 @@ export const sessionService = {
         paymentModel as {
           findMany: (args: {
             where: { billId: { in: number[] } };
-          }) => Promise<Array<{ billId: number; amount: number; mode: "cash" | "upi" | "card" | "due" }>>;
+          }) => Promise<Array<{
+            billId: number;
+            amount: number;
+            mode: "cash" | "upi" | "card" | "due";
+            createdAt?: Date;
+            dueSettledAt?: Date | null;
+            dueReceivedMode?: "cash" | "upi" | "card" | "due" | null;
+          }>>;
         }
       ).findMany({
         where: { billId: { in: billIds } },
@@ -777,10 +1541,22 @@ export const sessionService = {
       });
     }
 
-    const paymentsByBillId = new Map<number, Array<{ amount: number; mode: "cash" | "upi" | "card" | "due" }>>();
+    const paymentsByBillId = new Map<number, Array<{
+      amount: number;
+      mode: "cash" | "upi" | "card" | "due";
+      createdAt: Date;
+      dueSettledAt?: Date | null;
+      dueReceivedMode?: "cash" | "upi" | "card" | "due" | null;
+    }>>();
     for (const payment of allBillPayments) {
       const existing = paymentsByBillId.get(payment.billId) ?? [];
-      existing.push({ amount: payment.amount, mode: payment.mode });
+      existing.push({
+        amount: payment.amount,
+        mode: payment.mode,
+        createdAt: payment.createdAt instanceof Date ? payment.createdAt : new Date(0),
+        dueSettledAt: payment.dueSettledAt ?? null,
+        dueReceivedMode: payment.dueReceivedMode ?? null,
+      });
       paymentsByBillId.set(payment.billId, existing);
     }
 
@@ -806,8 +1582,9 @@ export const sessionService = {
       };
     });
 
-    const allocatedBySessionId = new Map<number, number>();
-    const billAmountBySessionId = new Map<number, number>();
+    const collectedBySessionId = new Map<number, number>();
+    const discountBySessionId = new Map<number, number>();
+    const finalAmountBySessionId = new Map<number, number>();
 
     for (const billId of billIds) {
       const sessionsInBill = calculatedRows
@@ -822,58 +1599,69 @@ export const sessionService = {
 
       const billMeta = billById.get(billId);
       const sessionsAmount = sessionsInBill.reduce((sum, session) => sum + session.amount, 0);
-      const billTargetAmount = billMeta
+      const billTotals = billMeta
         ? getEffectiveBillTotals({
           totalAmount: billMeta.totalAmount,
           discountType: billMeta.discountType,
           discountedAmount: billMeta.discountedAmount,
           sessionsAmount,
-        }).discountedAmount
-        : sessionsAmount;
-      let remainingBillAmount = billTargetAmount;
+        })
+        : getEffectiveBillTotals({
+          totalAmount: sessionsAmount,
+          discountType: null,
+          discountedAmount: sessionsAmount,
+          sessionsAmount,
+        });
 
+      const perSessionFinal = distributeProportionally(
+        billTotals.finalAmount,
+        sessionsInBill.map((session) => ({ id: session.id, weight: session.amount })),
+      );
       for (const session of sessionsInBill) {
-        if (remainingBillAmount <= 0) {
-          billAmountBySessionId.set(session.id, 0);
-          continue;
-        }
-        const sessionBillAmount = Math.min(session.amount, remainingBillAmount);
-        billAmountBySessionId.set(session.id, sessionBillAmount);
-        remainingBillAmount -= sessionBillAmount;
+        const allocatedFinal = roundMoney(perSessionFinal.get(session.id) ?? 0);
+        const finalAmount = roundMoney(Math.max(Math.min(allocatedFinal, session.amount), 0));
+        const discountShare = roundMoney(Math.max(session.amount - finalAmount, 0));
+        discountBySessionId.set(session.id, discountShare);
+        finalAmountBySessionId.set(session.id, finalAmount);
       }
 
-      const totalPaid = (paymentsByBillId.get(billId) ?? []).reduce(
+      const totalPaid = roundMoney((paymentsByBillId.get(billId) ?? []).reduce(
         (sum, payment) => sum + payment.amount,
         0,
+      ));
+      const perSessionCollected = distributeProportionally(
+        totalPaid,
+        sessionsInBill.map((session) => ({
+          id: session.id,
+          weight: finalAmountBySessionId.get(session.id) ?? session.amount,
+        })),
       );
 
-      let remaining = totalPaid;
       for (const session of sessionsInBill) {
-        const sessionBillAmount = billAmountBySessionId.get(session.id) ?? session.amount;
-        if (remaining <= 0) {
-          allocatedBySessionId.set(session.id, 0);
-        } else if (remaining >= sessionBillAmount) {
-          allocatedBySessionId.set(session.id, sessionBillAmount);
-          remaining -= sessionBillAmount;
-        } else {
-          allocatedBySessionId.set(session.id, remaining);
-          remaining = 0;
-        }
+        const finalAmount = finalAmountBySessionId.get(session.id) ?? session.amount;
+        const collectedShare = roundMoney(
+          Math.min(perSessionCollected.get(session.id) ?? 0, finalAmount),
+        );
+        collectedBySessionId.set(session.id, collectedShare);
       }
     }
 
-    return calculatedRows
+    const sortedRows = calculatedRows
       .map((row) => {
         const billed = isBilled({ billId: row.billId });
         const billPayments = billed ? paymentsByBillId.get(row.billId as number) ?? [] : [];
-        const defaultPaymentModes = Array.from(new Set(billPayments.map((payment) => payment.mode)));
+        const paymentSplit = derivePaymentSplit(billPayments);
+        const defaultPaymentModes = paymentSplit.map((entry) => entry.mode);
         const overridePaymentModes = normalizeOverridePaymentModes(row.overridePaymentModes);
         const paymentModes = overridePaymentModes ?? defaultPaymentModes;
-        const billAdjustedAmount = billed
-          ? billAmountBySessionId.get(row.id) ?? row.amount
+        const sessionDiscount = billed ? discountBySessionId.get(row.id) ?? 0 : 0;
+        const finalAmount = billed
+          ? finalAmountBySessionId.get(row.id) ?? row.amount
           : row.amount;
-        const paidAmount = allocatedBySessionId.get(row.id) ?? 0;
-        const remainingAmount = Math.max(billAdjustedAmount - paidAmount, 0);
+        const collectedAmount = billed ? collectedBySessionId.get(row.id) ?? 0 : 0;
+        const paidAmount = roundMoney(Math.min(collectedAmount + sessionDiscount, row.amount));
+        const effectivePaid = roundMoney(Math.max(paidAmount - sessionDiscount, 0));
+        const remainingAmount = roundMoney(Math.max(finalAmount - effectivePaid, 0));
         const effectiveStatus = getEffectiveSessionStatus({
           status: row.status,
           overrideStatus: row.overrideStatus,
@@ -881,24 +1669,35 @@ export const sessionService = {
         const state = deriveLedgerState({
           status: effectiveStatus,
           billId: row.billId,
-          paidAmount,
-          amount: billAdjustedAmount,
+          paidAmount: effectivePaid,
+          amount: finalAmount,
         });
 
         return {
           id: row.id,
           billId: row.billId,
+          businessDayKey: row.businessDayKey ?? toBusinessDayKeyFromDate(row.effectiveStartTime),
+          originalStatus: row.status,
           tableName: row.table.name,
           playerName: row.playerName,
+          originalStartTime: row.startTime,
           startTime: row.effectiveStartTime,
+          originalEndTime: row.endTime,
           endTime: row.effectiveEndTime,
           durationMinutes: row.durationMinutes,
+          originalRatePerMin: row.table.ratePerMin,
           ratePerMin: row.effectiveRatePerMin,
           amount: row.amount,
+          sessionDiscount,
+          finalAmount,
+          effectivePaid,
           paidAmount,
           remainingAmount,
           paymentModes,
+          paymentSplit,
           state,
+          originalPayerMode: row.payerMode,
+          originalPayerData: row.payerData,
           payerMode: getEffectivePayerMode(row),
           payerData: getEffectivePayerData(row),
           overrideStartTime: row.overrideStartTime ?? null,
@@ -925,5 +1724,249 @@ export const sessionService = {
 
         return b.id - a.id;
       });
+
+    const now = input?.now ?? new Date();
+    const scope = input?.scope ?? "current";
+    const currentBusinessDay = getBusinessDayRange(now);
+    const currentBusinessDayKey = currentBusinessDay.key;
+    const selectedDayKey = scope === "day" && input?.date
+      ? normalizeDayKeyInput(input.date)
+      : currentBusinessDayKey;
+    const selectedRange = scope === "range"
+      ? normalizeRangeInput(input?.startDate, input?.endDate)
+      : null;
+
+    const scopedRows = sortedRows.filter((row) => {
+      const rowKey = row.businessDayKey ?? toBusinessDayKeyFromDate(new Date(row.startTime));
+      if (scope === "day") {
+        return rowKey === selectedDayKey;
+      }
+      if (scope === "range" && selectedRange) {
+        return rowKey >= selectedRange.startDate && rowKey <= selectedRange.endDate;
+      }
+      return rowKey === currentBusinessDayKey;
+    });
+    const currentWindow = toBusinessDayWindowFromKey(currentBusinessDayKey);
+    const selectedWindow = toBusinessDayWindowFromKey(selectedDayKey);
+    const rangeStartWindow = selectedRange
+      ? toBusinessDayWindowFromKey(selectedRange.startDate)
+      : null;
+    const rangeEndWindow = selectedRange
+      ? toBusinessDayWindowFromKey(selectedRange.endDate)
+      : null;
+
+    const reportStart = scope === "day"
+      ? selectedWindow.start
+      : scope === "range" && rangeStartWindow
+        ? rangeStartWindow.start
+        : currentWindow.start;
+    const reportEnd = scope === "day"
+      ? selectedWindow.end
+      : scope === "range" && rangeEndWindow
+        ? rangeEndWindow.end
+        : currentBusinessDay.end;
+
+    const allPayments = await (
+      paymentModel as {
+        findMany: (args: {
+          select: {
+            amount: true;
+            mode: true;
+            createdAt: true;
+            dueSettledAt: true;
+            dueReceivedMode: true;
+          };
+        }) => Promise<Array<{
+          amount: number;
+          mode: "cash" | "upi" | "card" | "due";
+          createdAt?: Date;
+          dueSettledAt?: Date | null;
+          dueReceivedMode?: "cash" | "upi" | "card" | "due" | null;
+        }>>;
+      }
+    ).findMany({
+      select: {
+        amount: true,
+        mode: true,
+        createdAt: true,
+        dueSettledAt: true,
+        dueReceivedMode: true,
+      },
+    });
+    const paymentTotals = {
+      cash: 0,
+      upi: 0,
+      card: 0,
+      due: 0,
+      dueReceivedCash: 0,
+      dueReceivedUpi: 0,
+      dueReceivedCard: 0,
+    };
+    for (const payment of allPayments) {
+      if (payment.mode === "due") {
+        if (payment.dueSettledAt) {
+          if (
+            payment.dueSettledAt.getTime() >= reportStart.getTime() &&
+            payment.dueSettledAt.getTime() < reportEnd.getTime()
+          ) {
+            if (payment.dueReceivedMode === "cash") {
+              // settled-due principal lives in the receive entry (mode cash/upi/card)
+              // so we do not add this zeroed due row to collections.
+            } else if (payment.dueReceivedMode === "upi") {
+            } else if (payment.dueReceivedMode === "card") {
+            }
+          }
+        } else if (
+          payment.createdAt instanceof Date &&
+          payment.createdAt.getTime() >= reportStart.getTime() &&
+          payment.createdAt.getTime() < reportEnd.getTime()
+        ) {
+          paymentTotals.due += payment.amount;
+        }
+      } else if (
+        payment.dueSettledAt instanceof Date &&
+        payment.dueReceivedMode === payment.mode &&
+        payment.dueSettledAt.getTime() >= reportStart.getTime() &&
+        payment.dueSettledAt.getTime() < reportEnd.getTime()
+      ) {
+        if (payment.mode === "cash") {
+          paymentTotals.cash += payment.amount;
+          paymentTotals.dueReceivedCash += payment.amount;
+        } else if (payment.mode === "upi") {
+          paymentTotals.upi += payment.amount;
+          paymentTotals.dueReceivedUpi += payment.amount;
+        } else if (payment.mode === "card") {
+          paymentTotals.card += payment.amount;
+          paymentTotals.dueReceivedCard += payment.amount;
+        }
+      } else if (
+        payment.createdAt instanceof Date &&
+        payment.createdAt.getTime() >= reportStart.getTime() &&
+        payment.createdAt.getTime() < reportEnd.getTime()
+      ) {
+        if (payment.mode === "cash") {
+          paymentTotals.cash += payment.amount;
+        } else if (payment.mode === "upi") {
+          paymentTotals.upi += payment.amount;
+        } else if (payment.mode === "card") {
+          paymentTotals.card += payment.amount;
+        }
+      }
+    }
+
+    const subtotal = roundMoney(scopedRows.reduce((sum, row) => sum + row.amount, 0));
+    const discount = roundMoney(scopedRows.reduce((sum, row) => sum + row.sessionDiscount, 0));
+    const net = roundMoney(subtotal - discount);
+    const dueReceived = roundMoney(
+      paymentTotals.dueReceivedCash + paymentTotals.dueReceivedUpi + paymentTotals.dueReceivedCard,
+    );
+    const paid = roundMoney(paymentTotals.cash + paymentTotals.upi + paymentTotals.card);
+    const unpaid = roundMoney(scopedRows.reduce((sum, row) => sum + row.remainingAmount, 0));
+    const total = roundMoney(net + dueReceived);
+    const isBalanced = Math.abs(total - roundMoney(paid + unpaid)) < 0.01;
+
+    const summary = {
+      subtotal,
+      discount,
+      net,
+      cash: roundMoney(paymentTotals.cash),
+      upi: roundMoney(paymentTotals.upi),
+      card: roundMoney(paymentTotals.card),
+      due: roundMoney(paymentTotals.due),
+      dueReceived,
+      dueReceivedCash: roundMoney(paymentTotals.dueReceivedCash),
+      dueReceivedUpi: roundMoney(paymentTotals.dueReceivedUpi),
+      dueReceivedCard: roundMoney(paymentTotals.dueReceivedCard),
+      unpaid,
+      total,
+      paid,
+      isBalanced,
+    };
+
+    const snapshotKey = scope === "day" ? selectedDayKey : currentBusinessDayKey;
+    if (dailyReportModel && reportEnd.getTime() <= now.getTime()) {
+      await (
+        dailyReportModel as {
+          upsert: (args: {
+            where: { businessDayKey: string };
+            create: {
+              businessDayKey: string;
+              startAt: Date;
+              endAt: Date;
+              subtotal: number;
+              discount: number;
+              net: number;
+              cash: number;
+              upi: number;
+              card: number;
+              paid: number;
+              unpaid: number;
+              isBalanced: boolean;
+            };
+            update: {
+              subtotal: number;
+              discount: number;
+              net: number;
+              cash: number;
+              upi: number;
+              card: number;
+              paid: number;
+              unpaid: number;
+              isBalanced: boolean;
+            };
+          }) => Promise<unknown>;
+        }
+      ).upsert({
+        where: { businessDayKey: snapshotKey },
+        create: {
+          businessDayKey: snapshotKey,
+          startAt: reportStart,
+          endAt: reportEnd,
+          subtotal: summary.subtotal,
+          discount: summary.discount,
+          net: summary.net,
+          cash: summary.cash,
+          upi: summary.upi,
+          card: summary.card,
+          paid: summary.paid,
+          unpaid: summary.unpaid,
+          isBalanced: summary.isBalanced,
+        },
+        update: {
+          subtotal: summary.subtotal,
+          discount: summary.discount,
+          net: summary.net,
+          cash: summary.cash,
+          upi: summary.upi,
+          card: summary.card,
+          paid: summary.paid,
+          unpaid: summary.unpaid,
+          isBalanced: summary.isBalanced,
+        },
+      });
+    }
+
+    return {
+      rows: scopedRows,
+      summary,
+      window: {
+        scope,
+        key: scope === "day"
+          ? selectedDayKey
+          : scope === "range" && selectedRange
+            ? `${selectedRange.startDate}..${selectedRange.endDate}`
+            : currentBusinessDayKey,
+        start: scope === "day"
+          ? selectedWindow.start
+          : scope === "range" && rangeStartWindow
+            ? rangeStartWindow.start
+            : currentWindow.start,
+        end: scope === "day"
+          ? selectedWindow.end
+          : scope === "range" && rangeEndWindow
+            ? rangeEndWindow.end
+            : now,
+      },
+    };
   },
 };

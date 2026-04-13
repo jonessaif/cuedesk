@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { getEffectiveBillTotals } from "@/lib/billTotals";
+import { getCollectedPaidAmount, getEffectiveBillTotals } from "@/lib/billTotals";
 
 export async function GET() {
   try {
@@ -19,7 +19,13 @@ export async function GET() {
       return Response.json({ data: null }, { status: 200 });
     }
 
-    const paidAmount = latest.payments.reduce((sum, payment) => sum + payment.amount, 0);
+    const paidAmount = getCollectedPaidAmount(
+      latest.payments.map((payment) => ({
+        amount: payment.amount,
+        mode: payment.mode,
+        dueSettledAt: payment.dueSettledAt,
+      })),
+    );
     const sessionsAmount = latest.sessions.reduce(
       (sum, session) => sum + (typeof session.amount === "number" ? session.amount : 0),
       0,
@@ -36,12 +42,16 @@ export async function GET() {
       {
         data: {
           id: latest.id,
+          subtotal: totals.subtotal,
+          discount: totals.discount,
+          finalAmount: totals.finalAmount,
           totalAmount: totals.totalAmount,
           discountType: latest.discountType,
           discountValue: latest.discountValue,
           discountedAmount: totals.discountedAmount,
           paidAmount: totals.paidAmount,
           remainingAmount: totals.remainingAmount,
+          remaining: totals.remaining,
         },
       },
       { status: 200 },

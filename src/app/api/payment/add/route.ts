@@ -38,6 +38,10 @@ export async function POST(request: Request) {
       billId: body.billId,
       amount: body.amount,
       mode,
+      dueCustomerName:
+        body.dueCustomerName === undefined ? undefined : String(body.dueCustomerName),
+      dueCustomerPhone:
+        body.dueCustomerPhone === undefined ? undefined : String(body.dueCustomerPhone),
     });
 
     return Response.json(payment, { status: 200 });
