@@ -20,6 +20,7 @@ It is built with Next.js + Prisma + SQLite and keeps backend logic as the single
 ## Core Features
 - Table dashboard with derived states (`Free`, running variants, `Completed (Unbilled)`, `Billed`)
 - Session lifecycle: start, assign payer, end
+- Session outcome handling: `NORMAL`, `LTP_LOSS`, `CANCELLED`
 - Session override system:
   - optional override start/end/rate
   - optional override payer mode/data
@@ -34,11 +35,23 @@ It is built with Next.js + Prisma + SQLite and keeps backend logic as the single
   - strict no-overpay validation against discounted totals
   - due settlement tracking (`dueReceivedMode`, `dueSettledAt`)
 - Ledger:
-  - business-day aware reporting window (10 AM to next 10 AM)
+  - business-day aware reporting window (ledger reset time configurable, default 10 AM)
   - backend-derived revenue, collection, and status summaries
   - due-received visibility (included in collection modes)
   - grouped by bill context
   - daily snapshot storage (`DailyReport`)
+- Auth and security:
+  - PIN-based login (`4` digits)
+  - mobile numeric keypad with auto-submit at 4 digits
+  - persisted local auth (`localStorage`) + auto-login
+  - auto logout after 2 hours inactivity
+  - role-based access (`admin`, `operator`)
+  - backend role checks on all APIs
+- Management:
+  - table management (`create`, `edit`, `remove`)
+  - section management (`create`, `edit`, `remove`)
+  - user management with roles (`operator`, `admin`)
+  - configurable ledger reset time (once every 24 hours)
 
 ## Project Structure
 `src/app/page.tsx`  
@@ -47,8 +60,14 @@ Main dashboard + ledger + billing/payment UI.
 `src/app/api/*`  
 Route handlers for sessions, bills, payments, tables.
 
+`src/components/auth-provider.tsx`  
+Global auth store/provider (login, persistence, inactivity timeout, auth headers).
+
 `src/lib/services/*`  
 Business logic (session, payer, billing, payment, timer).
+
+`src/lib/authz.ts`  
+Authorization helpers (`requireRole`, `requireOperatorOrAdmin`, bootstrap support).
 
 `src/lib/session-status.ts`  
 Centralized effective status + ledger/table status derivation.
@@ -118,6 +137,34 @@ npm run start
 - Ledger status is backend-derived from effective status + bill linkage + paid amount
 - UI should not compute billing truth; UI only displays backend outputs
 
+## Management and Permissions
+- Roles:
+  - `operator`: session, billing, payments, reports
+  - `admin`: full access, including management
+- Management route:
+  - `/management` is admin-only
+  - unauthorized users are redirected to `/access-denied`
+- API auth:
+  - all APIs require authenticated user context except `/api/auth/login`
+  - send active user via request header:
+  - `x-user-id: <user-id>`
+- Admin-only APIs include:
+  - tables create/update/delete
+  - users create/list/update/delete
+  - table sections create/list/update/delete
+  - settings (ledger reset) get/update
+- Bootstrap mode:
+  - if `users` table is empty, management endpoints are allowed to help create the first admin.
+
+## Authentication UX
+- Login screen is centered and mobile friendly.
+- Numeric keypad is provided for fast PIN entry.
+- Login auto-submits when PIN length reaches 4.
+- Active user is shown in header.
+- `Logout` and `Switch User` are available in the header.
+- Auto logout happens after 2 hours of inactivity.
+- PIN validation is done on backend and stored as bcrypt hash (`bcryptjs`).
+
 ## Rate Rules
 - Regular tables: per-minute billing
 - PS tables (`name` starts with `PS`): hourly bucket billing using ceil-hours
@@ -132,9 +179,9 @@ npm run start
 - Discount update is blocked if fixed discount exceeds current remaining amount
 
 ## Business Day Reporting
-- Business day boundary is fixed at `10:00 AM` local time.
-- `current` report scope: `10:00 AM` to now.
-- `day` scope: selected day key (`YYYY-MM-DD`) mapped to `10:00 AM` -> next day `10:00 AM`.
+- Business day boundary is configurable via management settings (default `10:00 AM` local time).
+- `current` report scope: reset time to now.
+- `day` scope: selected day key (`YYYY-MM-DD`) mapped to reset time -> next day same reset time.
 - `range` scope: inclusive business-day keys.
 - Daily summary includes:
   - Revenue: `subtotal`, `discount`, `net`

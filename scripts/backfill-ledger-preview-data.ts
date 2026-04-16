@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -55,7 +55,9 @@ async function createCompletedSession(args: {
       amount: args.amount,
       billId: args.billId ?? null,
       payerMode: args.payerMode ?? "none",
-      payerData: args.payerData ?? null,
+      payerData: args.payerData === undefined
+        ? Prisma.JsonNull
+        : (args.payerData as Prisma.InputJsonValue),
       overrideStatus: args.overrideStatus ?? null,
       overrideRatePerMin: args.overrideRatePerMin ?? null,
     },
@@ -242,4 +244,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-

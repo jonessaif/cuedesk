@@ -94,6 +94,8 @@ export const billingService = {
             id: { in: number[] };
             billId: null;
             status: { not: "running" };
+            outcome: "NORMAL";
+            cancellationReason: null;
           };
           include: { table: { select: { ratePerMin: true; name: true } } };
         }) => Promise<
@@ -114,6 +116,8 @@ export const billingService = {
         id: { in: input.sessionIds },
         billId: null,
         status: { not: "running" },
+        outcome: "NORMAL",
+        cancellationReason: null,
       },
       include: {
         table: { select: { ratePerMin: true, name: true } },
@@ -184,6 +188,8 @@ export const billingService = {
       (prisma as { bill?: unknown; bills?: unknown }).bills;
     const paymentModel = (prisma as { payment?: unknown; payments?: unknown }).payment ??
       (prisma as { payment?: unknown; payments?: unknown }).payments;
+    const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
+      (prisma as { session?: unknown; sessions?: unknown }).sessions;
 
     const bill = (await (
       billModel as {
@@ -195,6 +201,21 @@ export const billingService = {
 
     if (!bill) {
       throw new Error("Bill not found");
+    }
+
+    const linkedSessions = await (
+      sessionModel as {
+        findMany: (args: {
+          where: { billId: number };
+          select: { outcome: true };
+        }) => Promise<Array<{ outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED" }>>;
+      }
+    ).findMany({
+      where: { billId: input.billId },
+      select: { outcome: true },
+    });
+    if (linkedSessions.some((session) => session.outcome === "LTP_LOSS" || session.outcome === "CANCELLED")) {
+      throw new Error("Cannot apply discount to non-billable sessions");
     }
 
     const payments = await (

@@ -1,3 +1,4 @@
+import { requireOperatorOrAdmin } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { paymentService } from "@/lib/services/paymentService";
 
@@ -6,6 +7,7 @@ type ReceiveMode = (typeof VALID_RECEIVE_MODES)[number];
 
 export async function POST(request: Request) {
   try {
+    await requireOperatorOrAdmin(prisma, request);
     const body = await request.json();
 
     if (
@@ -45,6 +47,7 @@ export async function POST(request: Request) {
     return Response.json(data, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    return Response.json({ error: message }, { status: 400 });
+    const status = message.startsWith("Unauthorized") ? 401 : message.startsWith("Forbidden") ? 403 : 400;
+    return Response.json({ error: message }, { status });
   }
 }

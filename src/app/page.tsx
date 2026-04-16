@@ -1,11 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@/components/auth-provider";
 
 type TableRow = {
   id: number;
   name: string;
   ratePerMin: number;
+  sectionId?: number | null;
+  sectionName?: string | null;
   state: string;
   currentSession?: {
     id?: number;
@@ -56,7 +60,11 @@ type LedgerSessionRow = {
     mode: PaymentMode;
     amount: number;
   }>;
-  state: "Running" | "Completed" | "Billed-Unpaid" | "Partially-Paid" | "Paid";
+  state: "Running" | "Completed" | "Billed-Unpaid" | "Partially-Paid" | "Paid" | "Cancelled" | "LTP-Loss";
+  outcome: "NORMAL" | "LTP_LOSS" | "CANCELLED";
+  ltpValue: number;
+  cancellationReason: string | null;
+  canceledAt: string | null;
   originalPayerMode: "none" | "single" | "split";
   originalPayerData: unknown;
   payerMode: "none" | "single" | "split";
@@ -105,11 +113,14 @@ type LedgerSummary = {
   dueReceivedCash: number;
   dueReceivedUpi: number;
   dueReceivedCard: number;
+  collectionTotal: number;
   unpaid: number;
   discount: number;
   total: number;
   paid: number;
   isBalanced: boolean;
+  ltpCount: number;
+  ltpValue: number;
 };
 
 type LedgerScope = "current" | "day" | "range";
@@ -173,29 +184,83 @@ type CustomerSuggestion = {
   lastSeenAt?: string;
 };
 
+type ToastMessage = {
+  id: number;
+  kind: "success" | "error" | "info";
+  text: string;
+};
+
+type AppUser = {
+  id: number;
+  name: string;
+  role: "operator" | "admin";
+  isActive: boolean;
+};
+
+type SpeechRecognitionLike = {
+  lang: string;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onresult: ((event: unknown) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+function formatSplitPercentage(value: number): string {
+  const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function applyEqualSplit(rows: SplitRow[]): SplitRow[] {
+  if (rows.length === 0) {
+    return rows;
+  }
+
+  const participants = rows.length;
+  const base = Math.floor((100 / participants) * 100) / 100;
+  const result: SplitRow[] = rows.map((row, index) => {
+    const value = index === participants - 1
+      ? Math.round((100 - base * (participants - 1)) * 100) / 100
+      : base;
+    return {
+      ...row,
+      percentage: formatSplitPercentage(value),
+    };
+  });
+
+  return result;
+}
+
 function isRunningState(state: string): boolean {
   return state.startsWith("Running");
 }
 
-function elapsedMinutes(startTime?: string): number {
+function formatElapsedFromStart(startTime?: string): string {
   if (!startTime) {
-    return 0;
+    return "00:00";
   }
 
   const start = new Date(startTime);
-  const diffMs = Date.now() - start.getTime();
-  if (diffMs <= 0) {
-    return 0;
+  if (Number.isNaN(start.getTime())) {
+    return "00:00";
   }
 
-  const minutes = Math.floor(diffMs / 60000);
-  if (minutes <= 0) {
-    return 0;
+  const diffMs = Date.now() - start.getTime();
+  if (diffMs <= 0) {
+    return "00:00";
   }
-  if (minutes > 720) {
-    return 720;
+
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
-  return minutes;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function formatTimeHHmm(value: string | null | undefined): string {
@@ -307,7 +372,14 @@ function formatDateInputValue(value: Date): string {
 
 function formatMoney(value: number | null | undefined): string {
   const safe = typeof value === "number" ? value : 0;
-  return Number.isInteger(safe) ? String(safe) : safe.toFixed(2);
+  return String(Math.round(safe));
+}
+
+function buildGenericPlayerName(tableName: string): string {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  return `Walk-in ${tableName} ${hh}:${mm}`;
 }
 
 function toLifecycleState(state: LedgerSessionRow["state"]): LifecycleState {
@@ -315,6 +387,12 @@ function toLifecycleState(state: LedgerSessionRow["state"]): LifecycleState {
     return "Running";
   }
   if (state === "Completed") {
+    return "Completed";
+  }
+  if (state === "Cancelled") {
+    return "Completed";
+  }
+  if (state === "LTP-Loss") {
     return "Completed";
   }
   if (state === "Paid") {
@@ -379,6 +457,12 @@ function tableStateLabel(state: string): string {
 }
 
 function ledgerRowColor(state: LedgerSessionRow["state"]): string {
+  if (state === "LTP-Loss") {
+    return "bg-fuchsia-100 border-l-4 border-fuchsia-500";
+  }
+  if (state === "Cancelled") {
+    return "bg-red-100 border-l-4 border-red-500";
+  }
   if (state === "Running") {
     return "bg-yellow-100 border-l-4 border-yellow-500";
   }
@@ -395,6 +479,12 @@ function ledgerRowColor(state: LedgerSessionRow["state"]): string {
 }
 
 function ledgerStatusText(state: LedgerSessionRow["state"]): string {
+  if (state === "LTP-Loss") {
+    return "LTP Loss (No charge)";
+  }
+  if (state === "Cancelled") {
+    return "✖ Cancelled";
+  }
   if (state === "Billed-Unpaid") {
     return "⚠ Unpaid";
   }
@@ -421,6 +511,9 @@ function hasSessionOverrides(row: LedgerSessionRow): boolean {
 
 function getSessionOverrideDiffs(row: LedgerSessionRow): Array<{ field: string; value: unknown }> {
   const diffs: Array<{ field: string; value: unknown }> = [];
+  if (row.outcome !== "NORMAL") {
+    diffs.push({ field: "outcome", value: row.outcome });
+  }
   if (row.overrideStatus !== null) {
     diffs.push({ field: "overrideStatus", value: row.overrideStatus });
   }
@@ -441,6 +534,9 @@ function getSessionOverrideDiffs(row: LedgerSessionRow): Array<{ field: string; 
   }
   if (row.overridePaymentModes !== null) {
     diffs.push({ field: "overridePaymentModes", value: row.overridePaymentModes });
+  }
+  if (row.cancellationReason) {
+    diffs.push({ field: "cancellationReason", value: row.cancellationReason });
   }
   return diffs;
 }
@@ -488,11 +584,23 @@ function getHistoryFieldLabel(field: string): string {
   if (field === "status") {
     return "Final Status";
   }
+  if (field === "outcome") {
+    return "Outcome";
+  }
+  if (field === "cancellationReason") {
+    return "Cancellation Reason";
+  }
+  if (field === "canceledAt") {
+    return "Cancelled At";
+  }
   if (field === "billId") {
     return "Bill";
   }
   if (field === "amount") {
     return "Total Amount";
+  }
+  if (field === "playerName") {
+    return "Player Name";
   }
   return field;
 }
@@ -527,7 +635,8 @@ function formatHistoryFieldValue(field: string, value: unknown): string {
     field === "overrideStartTime" ||
     field === "overrideEndTime" ||
     field === "startTime" ||
-    field === "endTime"
+    field === "endTime" ||
+    field === "canceledAt"
   ) {
     if (typeof value === "string") {
       return formatDateTimeFull(value);
@@ -572,6 +681,19 @@ function formatHistoryFieldValue(field: string, value: unknown): string {
 
   if (field === "amount" || field === "totalAmount" || field === "discountedAmount" || field === "discount") {
     return typeof value === "number" ? `₹${formatMoney(value)}` : "-";
+  }
+
+  if (field === "outcome") {
+    if (value === "LTP_LOSS") {
+      return "LTP Loss";
+    }
+    if (value === "CANCELLED") {
+      return "Cancelled";
+    }
+    if (value === "NORMAL") {
+      return "Normal";
+    }
+    return typeof value === "string" ? value : "-";
   }
 
   if (field === "payments") {
@@ -640,9 +762,7 @@ function payerDisplayText(table: TableRow): string {
   return "";
 }
 
-type TableSectionKey = "Snooker" | "Pool Tables" | "PlayStation" | "Other";
-
-function getTableSection(name: string): TableSectionKey {
+function getTableSection(name: string): string {
   const upper = name.trim().toUpperCase();
   if (upper === "S1" || upper === "S2" || upper === "S3") {
     return "Snooker";
@@ -664,7 +784,30 @@ function tableSortRank(name: string): number {
 }
 
 export default function HomePage() {
+  const {
+    authReady,
+    loginBusy,
+    activeUser,
+    activeUserId,
+    authHeaders,
+    loginWithPin,
+    logout: logoutAuth,
+    switchUser,
+  } = useAuth();
   const [isDark, setIsDark] = useState(false);
+  const [themeReady, setThemeReady] = useState(false);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [managementUsers, setManagementUsers] = useState<AppUser[]>([]);
+  const [showManagement, setShowManagement] = useState(false);
+  const [loginPin, setLoginPin] = useState("");
+  const autoSubmittedPinRef = useRef<string | null>(null);
+  const [newTableName, setNewTableName] = useState("");
+  const [newTableRate, setNewTableRate] = useState("");
+  const [tableManageBusyId, setTableManageBusyId] = useState<number | null>(null);
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserPin, setNewUserPin] = useState("");
+  const [newUserRole, setNewUserRole] = useState<"operator" | "admin">("operator");
+  const [userManageBusyId, setUserManageBusyId] = useState<number | null>(null);
   const [tables, setTables] = useState<TableRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -672,6 +815,10 @@ export default function HomePage() {
   const [busyTableId, setBusyTableId] = useState<number | null>(null);
   const [startTable, setStartTable] = useState<TableRow | null>(null);
   const [startPlayerName, setStartPlayerName] = useState("");
+  const [startPlayerSuggestions, setStartPlayerSuggestions] = useState<CustomerSuggestion[]>([]);
+  const [showStartPlayerSuggestions, setShowStartPlayerSuggestions] = useState(false);
+  const [startVoiceListening, setStartVoiceListening] = useState(false);
+  const startSpeechRef = useRef<SpeechRecognitionLike | null>(null);
   const [startTimeInput, setStartTimeInput] = useState("");
   const [startDateInput, setStartDateInput] = useState(todayDateInputValue());
   const [startIncludeDate, setStartIncludeDate] = useState(false);
@@ -680,6 +827,7 @@ export default function HomePage() {
   const [endDateInput, setEndDateInput] = useState(todayDateInputValue());
   const [endIncludeDate, setEndIncludeDate] = useState(false);
   const [endPayerName, setEndPayerName] = useState("");
+  const [endAsLtpLoss, setEndAsLtpLoss] = useState(false);
   const [payerTable, setPayerTable] = useState<TableRow | null>(null);
   const [payerMode, setPayerMode] = useState<"single" | "split">("single");
   const [singlePayerName, setSinglePayerName] = useState("");
@@ -703,11 +851,14 @@ export default function HomePage() {
     dueReceivedCash: 0,
     dueReceivedUpi: 0,
     dueReceivedCard: 0,
+    collectionTotal: 0,
     unpaid: 0,
     discount: 0,
     total: 0,
     paid: 0,
     isBalanced: true,
+    ltpCount: 0,
+    ltpValue: 0,
   });
   const [ledgerScope, setLedgerScope] = useState<LedgerScope>("current");
   const [ledgerDate, setLedgerDate] = useState<string>(todayDateInputValue());
@@ -741,6 +892,7 @@ export default function HomePage() {
   const [dueReportByBill, setDueReportByBill] = useState<DueByBillRow[]>([]);
   const [dueViewMode, setDueViewMode] = useState<"customer" | "bill">("customer");
   const [showBillsPanel, setShowBillsPanel] = useState(false);
+  const [showReportsSidebar, setShowReportsSidebar] = useState(false);
   const [billSearchRows, setBillSearchRows] = useState<BillSearchRow[]>([]);
   const [billSearchLoading, setBillSearchLoading] = useState(false);
   const [billSearchError, setBillSearchError] = useState<string | null>(null);
@@ -760,6 +912,10 @@ export default function HomePage() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [editingSession, setEditingSession] = useState<LedgerSessionRow | null>(null);
+  const [cancelSessionTarget, setCancelSessionTarget] = useState<LedgerSessionRow | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [overridePlayerName, setOverridePlayerName] = useState("");
   const [overrideStartTime, setOverrideStartTime] = useState("");
   const [overrideStartDate, setOverrideStartDate] = useState(todayDateInputValue());
   const [overrideStartIncludeDate, setOverrideStartIncludeDate] = useState(false);
@@ -767,6 +923,7 @@ export default function HomePage() {
   const [overrideEndDate, setOverrideEndDate] = useState(todayDateInputValue());
   const [overrideEndIncludeDate, setOverrideEndIncludeDate] = useState(false);
   const [overrideRatePerMin, setOverrideRatePerMin] = useState("");
+  const [overrideOutcome, setOverrideOutcome] = useState<"NORMAL" | "LTP_LOSS">("NORMAL");
   const [overridePayerMode, setOverridePayerMode] = useState<"none" | "single" | "split">(
     "none",
   );
@@ -776,6 +933,27 @@ export default function HomePage() {
     { name: "", percentage: "" },
   ]);
   const [overrideBusy, setOverrideBusy] = useState(false);
+  const isAdminUser = activeUser?.role === "admin";
+  const canManage = isAdminUser;
+
+  function pushToast(kind: ToastMessage["kind"], text: string) {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setToasts((prev) => [...prev, { id, kind, text }]);
+  }
+
+  function removeToast(id: number) {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+  }
+
+  useEffect(() => {
+    if (toasts.length === 0) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      setToasts((prev) => prev.slice(1));
+    }, 2800);
+    return () => clearTimeout(timer);
+  }, [toasts]);
 
   async function readJsonSafe<T>(res: Response): Promise<T | null> {
     try {
@@ -785,10 +963,32 @@ export default function HomePage() {
     }
   }
 
+  async function loadManagementUsers() {
+    if (!activeUserId) {
+      setManagementUsers([]);
+      return;
+    }
+    try {
+      const res = await fetch("/api/users", {
+        cache: "no-store",
+        headers: authHeaders(),
+      });
+      const data = await readJsonSafe<{ data?: AppUser[]; error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to fetch users");
+      }
+      setManagementUsers(data?.data ?? []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to fetch users";
+      pushToast("error", message);
+      setManagementUsers([]);
+    }
+  }
+
   async function loadTables() {
     try {
       setError(null);
-      const res = await fetch("/api/tables", { cache: "no-store" });
+      const res = await fetch("/api/tables", { cache: "no-store", headers: authHeaders() });
       const data = await readJsonSafe<{ data?: TableRow[]; error?: string }>(res);
 
       if (!res.ok) {
@@ -807,7 +1007,7 @@ export default function HomePage() {
   async function loadCompletedSessions() {
     try {
       setBillingError(null);
-      const res = await fetch("/api/sessions/completed", { cache: "no-store" });
+      const res = await fetch("/api/sessions/completed", { cache: "no-store", headers: authHeaders() });
       const data = await readJsonSafe<{ data?: CompletedSessionRow[]; error?: string }>(res);
 
       if (!res.ok) {
@@ -828,7 +1028,7 @@ export default function HomePage() {
 
   async function loadUnpaidBills(): Promise<UnpaidBill[]> {
     try {
-      const res = await fetch("/api/bill/unpaid", { cache: "no-store" });
+      const res = await fetch("/api/bill/unpaid", { cache: "no-store", headers: authHeaders() });
       const data = await readJsonSafe<{ data?: UnpaidBill[]; error?: string }>(res);
 
       if (!res.ok) {
@@ -848,7 +1048,7 @@ export default function HomePage() {
 
   async function loadDueReport() {
     try {
-      const res = await fetch("/api/payment/due-report", { cache: "no-store" });
+      const res = await fetch("/api/payment/due-report", { cache: "no-store", headers: authHeaders() });
       const data = await readJsonSafe<{ data?: DueReportRow[]; error?: string }>(res);
       if (!res.ok) {
         throw new Error(data?.error ?? "Failed to fetch due report");
@@ -876,7 +1076,7 @@ export default function HomePage() {
 
   async function loadDueReportByBill() {
     try {
-      const res = await fetch("/api/payment/due-report-by-bill", { cache: "no-store" });
+      const res = await fetch("/api/payment/due-report-by-bill", { cache: "no-store", headers: authHeaders() });
       const data = await readJsonSafe<{ data?: DueByBillRow[]; error?: string }>(res);
       if (!res.ok) {
         throw new Error(data?.error ?? "Failed to fetch due by bill report");
@@ -933,7 +1133,7 @@ export default function HomePage() {
 
       const query = params.toString();
       const url = query ? `/api/bill/search?${query}` : "/api/bill/search";
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await fetch(url, { cache: "no-store", headers: authHeaders() });
       const data = await readJsonSafe<{ data?: BillSearchRow[]; error?: string }>(res);
       if (!res.ok) {
         throw new Error(data?.error ?? "Failed to fetch bills");
@@ -945,6 +1145,239 @@ export default function HomePage() {
       setBillSearchRows([]);
     } finally {
       setBillSearchLoading(false);
+    }
+  }
+
+  async function submitPinLogin() {
+    const result = await loginWithPin(loginPin);
+    if (!result.ok) {
+      pushToast("error", result.error ?? "Login failed");
+      return;
+    }
+    if (loginPin.trim()) {
+      setLoginPin("");
+    }
+    pushToast("success", "Login successful");
+  }
+
+  useEffect(() => {
+    if (!authReady || loginBusy) {
+      return;
+    }
+    const normalizedPin = loginPin.trim();
+    if (!/^\d{4}$/.test(normalizedPin)) {
+      autoSubmittedPinRef.current = null;
+      return;
+    }
+    if (autoSubmittedPinRef.current === normalizedPin) {
+      return;
+    }
+    autoSubmittedPinRef.current = normalizedPin;
+    void submitPinLogin();
+  }, [authReady, loginBusy, loginPin]);
+
+  function logout() {
+    logoutAuth("manual");
+    setShowManagement(false);
+    pushToast("info", "Logged out");
+  }
+
+  function handleSwitchUser() {
+    switchUser();
+    setShowManagement(false);
+    pushToast("info", "Switched user");
+  }
+
+  function ensureAdminAction(): boolean {
+    if (!activeUserId) {
+      pushToast("error", "Please log in first");
+      return false;
+    }
+    if (!isAdminUser) {
+      pushToast("error", "Only admin can access management actions");
+      return false;
+    }
+    return true;
+  }
+
+  async function submitCreateTable() {
+    if (!ensureAdminAction()) {
+      return;
+    }
+    const name = newTableName.trim();
+    const rate = Number(newTableRate);
+    if (!name || !Number.isFinite(rate) || rate <= 0) {
+      pushToast("error", "Table name and valid rate are required");
+      return;
+    }
+    try {
+      const res = await fetch("/api/tables", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ name, ratePerMin: rate }),
+      });
+      const data = await readJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to create table");
+      }
+      pushToast("success", "Table created");
+      setNewTableName("");
+      setNewTableRate("");
+      await loadTables();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create table";
+      pushToast("error", message);
+    }
+  }
+
+  async function editTableInline(table: TableRow) {
+    if (!ensureAdminAction()) {
+      return;
+    }
+    const nextName = window.prompt("Table name", table.name);
+    if (nextName === null) {
+      return;
+    }
+    const nextRateRaw = window.prompt("Rate per min", String(table.ratePerMin));
+    if (nextRateRaw === null) {
+      return;
+    }
+    const nextRate = Number(nextRateRaw);
+    if (!nextName.trim() || !Number.isFinite(nextRate) || nextRate <= 0) {
+      pushToast("error", "Invalid name or rate");
+      return;
+    }
+    setTableManageBusyId(table.id);
+    try {
+      const res = await fetch(`/api/tables/${table.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ name: nextName.trim(), ratePerMin: nextRate }),
+      });
+      const data = await readJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to update table");
+      }
+      pushToast("success", "Table updated");
+      await loadTables();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update table";
+      pushToast("error", message);
+    } finally {
+      setTableManageBusyId(null);
+    }
+  }
+
+  async function deleteTableInline(table: TableRow) {
+    if (!ensureAdminAction()) {
+      return;
+    }
+    if (!window.confirm(`Delete table ${table.name}?`)) {
+      return;
+    }
+    setTableManageBusyId(table.id);
+    try {
+      const res = await fetch(`/api/tables/${table.id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      const data = await readJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to delete table");
+      }
+      pushToast("success", "Table deleted");
+      await loadTables();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete table";
+      pushToast("error", message);
+    } finally {
+      setTableManageBusyId(null);
+    }
+  }
+
+  async function submitCreateUser() {
+    if (!ensureAdminAction()) {
+      return;
+    }
+    const name = newUserName.trim();
+    const pin = newUserPin.trim();
+    if (!name || !/^\d{4}$/.test(pin)) {
+      pushToast("error", "User name and valid 4-digit PIN are required");
+      return;
+    }
+    try {
+      const res = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ name, pin, role: newUserRole, isActive: true }),
+      });
+      const data = await readJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to create user");
+      }
+      pushToast("success", "User created");
+      setNewUserName("");
+      setNewUserPin("");
+      setNewUserRole("operator");
+      await loadManagementUsers();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create user";
+      pushToast("error", message);
+    }
+  }
+
+  async function updateUserInline(
+    userId: number,
+    payload: { role?: "operator" | "admin"; isActive?: boolean },
+  ) {
+    if (!ensureAdminAction()) {
+      return;
+    }
+    setUserManageBusyId(userId);
+    try {
+      const res = await fetch(`/api/users/${userId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify(payload),
+      });
+      const data = await readJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to update user");
+      }
+      pushToast("success", "User updated");
+      await loadManagementUsers();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update user";
+      pushToast("error", message);
+    } finally {
+      setUserManageBusyId(null);
+    }
+  }
+
+  async function deleteUserInline(user: AppUser) {
+    if (!ensureAdminAction()) {
+      return;
+    }
+    if (!window.confirm(`Delete user ${user.name}?`)) {
+      return;
+    }
+    setUserManageBusyId(user.id);
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      const data = await readJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to delete user");
+      }
+      pushToast("success", "User deleted");
+      await loadManagementUsers();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete user";
+      pushToast("error", message);
+    } finally {
+      setUserManageBusyId(null);
     }
   }
 
@@ -964,8 +1397,9 @@ export default function HomePage() {
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const res = await fetch(`/api/customers/search?q=${encodeURIComponent(q)}`, {
+          const res = await fetch(`/api/customers/search?q=${encodeURIComponent(q)}&scope=due`, {
             cache: "no-store",
+            headers: authHeaders(),
           });
           const data = await readJsonSafe<{ data?: CustomerSuggestion[] }>(res);
           if (!res.ok) {
@@ -982,6 +1416,112 @@ export default function HomePage() {
     return () => clearTimeout(timer);
   }, [paymentMode, dueCustomerName, dueCustomerPhone]);
 
+  useEffect(() => {
+    if (!startTable) {
+      setStartPlayerSuggestions([]);
+      setShowStartPlayerSuggestions(false);
+      return;
+    }
+
+    const q = startPlayerName.trim();
+    if (!q) {
+      setStartPlayerSuggestions([]);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await fetch(`/api/customers/search?q=${encodeURIComponent(q)}&scope=player`, {
+            cache: "no-store",
+            headers: authHeaders(),
+          });
+          const data = await readJsonSafe<{ data?: CustomerSuggestion[] }>(res);
+          if (!res.ok) {
+            setStartPlayerSuggestions([]);
+            return;
+          }
+          setStartPlayerSuggestions(data?.data ?? []);
+        } catch {
+          setStartPlayerSuggestions([]);
+        }
+      })();
+    }, 180);
+
+    return () => clearTimeout(timer);
+  }, [startTable, startPlayerName]);
+
+  function stopStartPlayerVoiceInput() {
+    const recognition = startSpeechRef.current;
+    if (recognition) {
+      recognition.stop();
+      startSpeechRef.current = null;
+    }
+    setStartVoiceListening(false);
+  }
+
+  function startPlayerVoiceInput() {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (startVoiceListening) {
+      stopStartPlayerVoiceInput();
+      return;
+    }
+
+    const speechWindow = window as typeof window & {
+      SpeechRecognition?: new () => SpeechRecognitionLike;
+      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+    };
+    const SpeechRecognitionCtor =
+      speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      pushToast("error", "Voice input is not supported on this browser");
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognitionCtor();
+      recognition.lang = "en-IN";
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+      recognition.onresult = (event: unknown) => {
+        const speechEvent = event as {
+          results?: ArrayLike<ArrayLike<{ transcript?: string }>>;
+        };
+        const transcript = String(speechEvent.results?.[0]?.[0]?.transcript ?? "").trim();
+        if (!transcript) {
+          pushToast("error", "Could not detect name from voice input");
+          return;
+        }
+        setStartPlayerName(transcript);
+        setShowStartPlayerSuggestions(false);
+      };
+      recognition.onerror = () => {
+        pushToast("error", "Voice input failed, please try again");
+      };
+      recognition.onend = () => {
+        setStartVoiceListening(false);
+        startSpeechRef.current = null;
+      };
+      startSpeechRef.current = recognition;
+      setStartVoiceListening(true);
+      recognition.start();
+    } catch {
+      setStartVoiceListening(false);
+      startSpeechRef.current = null;
+      pushToast("error", "Unable to start voice input");
+    }
+  }
+
+  useEffect(() => () => {
+    const recognition = startSpeechRef.current;
+    if (recognition) {
+      recognition.stop();
+      startSpeechRef.current = null;
+    }
+  }, []);
+
   async function loadAllSessions(scope: LedgerScope = ledgerScope) {
     try {
       const params = new URLSearchParams({ scope });
@@ -992,7 +1532,7 @@ export default function HomePage() {
         params.set("startDate", ledgerStartDate);
         params.set("endDate", ledgerEndDate);
       }
-      const res = await fetch(`/api/sessions/all?${params.toString()}`, { cache: "no-store" });
+      const res = await fetch(`/api/sessions/all?${params.toString()}`, { cache: "no-store", headers: authHeaders() });
       const data = await readJsonSafe<{
         data?: LedgerSessionRow[];
         summary?: LedgerSummary;
@@ -1015,11 +1555,14 @@ export default function HomePage() {
           dueReceivedCash: 0,
           dueReceivedUpi: 0,
           dueReceivedCard: 0,
+          collectionTotal: 0,
           unpaid: 0,
           discount: 0,
           total: 0,
           paid: 0,
           isBalanced: true,
+          ltpCount: 0,
+          ltpValue: 0,
         },
       );
       setLedgerWindow(
@@ -1043,11 +1586,14 @@ export default function HomePage() {
         dueReceivedCash: 0,
         dueReceivedUpi: 0,
         dueReceivedCard: 0,
+        collectionTotal: 0,
         unpaid: 0,
         discount: 0,
         total: 0,
         paid: 0,
         isBalanced: true,
+        ltpCount: 0,
+        ltpValue: 0,
       });
       setLedgerWindow({
         scope,
@@ -1059,19 +1605,45 @@ export default function HomePage() {
   }
 
   useEffect(() => {
-    const saved =
-      typeof window !== "undefined" ? window.localStorage.getItem("cuedesk-theme") : null;
-    setIsDark(saved === "dark");
-  }, []);
+    if (!isAdminUser || !showManagement) {
+      return;
+    }
+    void loadManagementUsers();
+  }, [isAdminUser, showManagement, activeUserId]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
-    window.localStorage.setItem("cuedesk-theme", isDark ? "dark" : "light");
-  }, [isDark]);
+    setIsDark(window.localStorage.getItem("cuedesk-theme") === "dark");
+    if (window.localStorage.getItem("cuedesk-auth-timeout") === "1") {
+      window.localStorage.removeItem("cuedesk-auth-timeout");
+      pushToast("info", "Logged out after 2 hours of inactivity");
+    }
+    setThemeReady(true);
+  }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !themeReady) {
+      return;
+    }
+    window.localStorage.setItem("cuedesk-theme", isDark ? "dark" : "light");
+  }, [isDark, themeReady]);
+
+  function toggleTheme() {
+    setIsDark((prev) => {
+      const next = !prev;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("cuedesk-theme", next ? "dark" : "light");
+      }
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (!activeUserId) {
+      return;
+    }
     void loadTables();
     void loadCompletedSessions();
     void loadUnpaidBills();
@@ -1090,6 +1662,7 @@ export default function HomePage() {
     }, 5000);
     return () => clearInterval(poll);
   }, [
+    activeUserId,
     ledgerScope,
     ledgerDate,
     ledgerStartDate,
@@ -1116,11 +1689,11 @@ export default function HomePage() {
 
   function applyRangeFilter() {
     if (!ledgerStartDate || !ledgerEndDate) {
-      alert("Start and end date are required");
+      pushToast("error", "Start and end date are required");
       return;
     }
     if (ledgerStartDate > ledgerEndDate) {
-      alert("Start date must be before or equal to end date");
+      pushToast("error", "Start date must be before or equal to end date");
       return;
     }
     setLedgerScope("range");
@@ -1153,19 +1726,16 @@ export default function HomePage() {
   }
 
   const tableSections = useMemo(() => {
-    const grouped: Record<TableSectionKey, TableRow[]> = {
-      Snooker: [],
-      "Pool Tables": [],
-      PlayStation: [],
-      Other: [],
-    };
-
+    const grouped = new Map<string, TableRow[]>();
     for (const table of tables) {
-      grouped[getTableSection(table.name)].push(table);
+      const sectionTitle = (table.sectionName ?? "").trim() || getTableSection(table.name);
+      const bucket = grouped.get(sectionTitle) ?? [];
+      bucket.push(table);
+      grouped.set(sectionTitle, bucket);
     }
 
-    for (const key of Object.keys(grouped) as TableSectionKey[]) {
-      grouped[key].sort((a, b) => {
+    for (const rows of grouped.values()) {
+      rows.sort((a, b) => {
         const rankDiff = tableSortRank(a.name) - tableSortRank(b.name);
         if (rankDiff !== 0) {
           return rankDiff;
@@ -1174,28 +1744,39 @@ export default function HomePage() {
       });
     }
 
-    const sections: Array<{ title: TableSectionKey; rows: TableRow[] }> = [
-      { title: "Snooker", rows: grouped.Snooker },
-      { title: "Pool Tables", rows: grouped["Pool Tables"] },
-      { title: "PlayStation", rows: grouped.PlayStation },
-    ];
+    const preferred = ["Snooker", "Pool Tables", "PlayStation"];
+    const titles = Array.from(grouped.keys()).sort((a, b) => {
+      const ai = preferred.indexOf(a);
+      const bi = preferred.indexOf(b);
+      if (ai !== -1 || bi !== -1) {
+        if (ai === -1) return 1;
+        if (bi === -1) return -1;
+        return ai - bi;
+      }
+      return a.localeCompare(b);
+    });
 
-    if (grouped.Other.length > 0) {
-      sections.push({ title: "Other", rows: grouped.Other });
-    }
-
-    return sections;
+    return titles.map((title) => ({
+      title,
+      rows: grouped.get(title) ?? [],
+    }));
   }, [tables, tick]);
 
   function openStartSession(table: TableRow) {
     setStartTable(table);
     setStartPlayerName("");
+    setStartPlayerSuggestions([]);
+    setShowStartPlayerSuggestions(false);
+    setStartVoiceListening(false);
     setStartTimeInput("");
     setStartDateInput(todayDateInputValue());
     setStartIncludeDate(false);
   }
 
   function closeStartSession() {
+    stopStartPlayerVoiceInput();
+    setStartPlayerSuggestions([]);
+    setShowStartPlayerSuggestions(false);
     setStartTable(null);
   }
 
@@ -1204,10 +1785,10 @@ export default function HomePage() {
       return;
     }
 
-    const playerName = startPlayerName.trim();
-    if (!playerName) {
-      alert("Player name is required");
-      return;
+    const typedPlayerName = startPlayerName.trim();
+    const playerName = typedPlayerName || buildGenericPlayerName(startTable.name);
+    if (!typedPlayerName) {
+      pushToast("info", `No player name entered. Using "${playerName}"`);
     }
 
     const tableId = startTable.id;
@@ -1216,7 +1797,7 @@ export default function HomePage() {
       startIncludeDate ? startDateInput : undefined,
     );
     if (startTimeInput.trim() && !parsedStartTime) {
-      alert("Invalid start time");
+      pushToast("error", "Invalid start time");
       return;
     }
 
@@ -1243,7 +1824,7 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/session/start", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           tableId,
           playerName,
@@ -1253,13 +1834,13 @@ export default function HomePage() {
 
       if (!res.ok) {
         const data = await readJsonSafe<{ error?: string }>(res);
-        alert(data?.error ?? "Failed to start session");
+        pushToast("error", data?.error ?? "Failed to start session");
         void loadTables();
         void loadAllSessions();
         return;
       }
 
-      alert("Session started successfully");
+      pushToast("success", "Session started successfully");
       closeStartSession();
       void loadTables();
       void loadCompletedSessions();
@@ -1275,6 +1856,7 @@ export default function HomePage() {
     setEndDateInput(todayDateInputValue());
     setEndIncludeDate(false);
     setEndPayerName(table.currentSession?.playerName ?? "");
+    setEndAsLtpLoss(false);
   }
 
   function closeEndSession() {
@@ -1289,20 +1871,20 @@ export default function HomePage() {
     const tableId = endTable.id;
     const sessionId = endTable.currentSession?.id;
     if (!sessionId) {
-      alert("Active session id is missing");
+      pushToast("error", "Active session id is missing");
       return;
     }
 
-    if (endTable.state === "Running-NoPayer") {
+    if (endTable.state === "Running-NoPayer" && !endAsLtpLoss) {
       const payerName = endPayerName.trim();
       if (!payerName) {
-        alert("Payer is required to end session");
+        pushToast("error", "Payer is required to end session");
         return;
       }
 
       const payerRes = await fetch("/api/session/assign-payer", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           sessionId,
           payerMode: "single",
@@ -1312,7 +1894,7 @@ export default function HomePage() {
 
       if (!payerRes.ok) {
         const data = await readJsonSafe<{ error?: string }>(payerRes);
-        alert(data?.error ?? "Failed to assign payer");
+        pushToast("error", data?.error ?? "Failed to assign payer");
         return;
       }
     }
@@ -1324,7 +1906,7 @@ export default function HomePage() {
         endIncludeDate ? endDateInput : undefined,
       );
       if (!parsedEndTime) {
-        alert("Invalid end time");
+        pushToast("error", "Invalid end time");
         return;
       }
     }
@@ -1346,22 +1928,23 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/session/end", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           tableId,
+          outcome: endAsLtpLoss ? "LTP_LOSS" : "NORMAL",
           ...(parsedEndTime ? { endTime: parsedEndTime.toISOString() } : {}),
         }),
       });
 
       if (!res.ok) {
         const data = await readJsonSafe<{ error?: string }>(res);
-        alert(data?.error ?? "Failed to end session");
+        pushToast("error", data?.error ?? "Failed to end session");
         void loadTables();
         void loadAllSessions();
         return;
       }
 
-      alert("Session ended successfully");
+      pushToast("success", "Session ended successfully");
       closeEndSession();
       void loadTables();
       void loadCompletedSessions();
@@ -1400,12 +1983,12 @@ export default function HomePage() {
 
     const sessionId = payerTable.currentSession?.id;
     if (!sessionId) {
-      alert("Active session id is missing");
+      pushToast("error", "Active session id is missing");
       return;
     }
 
     if (payerMode === "single" && singlePayerName.trim() === "") {
-      alert("Payer name is required");
+      pushToast("error", "Payer name is required");
       return;
     }
 
@@ -1417,7 +2000,7 @@ export default function HomePage() {
           !Number.isFinite(Number(row.percentage)),
       );
       if (invalid) {
-        alert("All split names and percentages must be valid");
+        pushToast("error", "All split names and percentages must be valid");
         return;
       }
     }
@@ -1442,17 +2025,17 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/session/assign-payer", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
         const data = await readJsonSafe<{ error?: string }>(res);
-        alert(data?.error ?? "Failed to assign payer");
+        pushToast("error", data?.error ?? "Failed to assign payer");
         return;
       }
 
-      alert("Payer assigned successfully");
+      pushToast("success", "Payer assigned successfully");
       closeAssignPayer();
       void loadTables();
       void loadCompletedSessions();
@@ -1475,9 +2058,11 @@ export default function HomePage() {
     const stateOrder: Record<LedgerSessionRow["state"], number> = {
       Running: 0,
       Completed: 1,
-      "Billed-Unpaid": 2,
-      "Partially-Paid": 3,
-      Paid: 4,
+      "LTP-Loss": 2,
+      Cancelled: 3,
+      "Billed-Unpaid": 4,
+      "Partially-Paid": 5,
+      Paid: 6,
     };
 
     return [...sessionsLedger].sort((a, b) => {
@@ -1547,7 +2132,7 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/bill/create", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           sessionIds: ids,
         }),
@@ -1564,7 +2149,7 @@ export default function HomePage() {
       await loadTables();
       await loadUnpaidBills();
       await loadAllSessions();
-      alert("Bill created successfully");
+      pushToast("success", "Bill created successfully");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create bill";
       setBillingError(message);
@@ -1597,7 +2182,7 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/payment/add", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           billId: selectedBillId,
           amount: Number(paymentAmount),
@@ -1630,7 +2215,7 @@ export default function HomePage() {
       if (!rows.some((bill) => bill.id === selectedBillId)) {
         setSelectedBillId(null);
       }
-      alert("Payment added successfully");
+      pushToast("success", "Payment added successfully");
     } catch {
       setPaymentError("Failed to add payment");
     } finally {
@@ -1665,7 +2250,7 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/bill/discount", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           billId: selectedBill.id,
           discountType: billDiscountType === "none" ? undefined : billDiscountType,
@@ -1709,7 +2294,7 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/payment/receive-due", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           ...(row.customerPhone !== "-" ? { customerPhone: row.customerPhone } : {}),
           ...(row.customerPhone === "-" ? { paymentId: row.paymentIds[0] } : {}),
@@ -1755,7 +2340,7 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/payment/receive-due", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           paymentId: row.paymentId,
           mode,
@@ -1779,7 +2364,12 @@ export default function HomePage() {
   }
 
   function openOverrideModal(session: LedgerSessionRow) {
+    if (session.state === "Cancelled") {
+      pushToast("info", "This session cannot be overridden");
+      return;
+    }
     setEditingSession(session);
+    setOverridePlayerName(session.playerName ?? "");
     setOverrideStartTime(toTimeInputValue(session.overrideStartTime));
     setOverrideStartDate(toDateInputValue(session.overrideStartTime));
     setOverrideStartIncludeDate(false);
@@ -1789,6 +2379,7 @@ export default function HomePage() {
     setOverrideRatePerMin(
       session.overrideRatePerMin !== null ? String(session.overrideRatePerMin) : "",
     );
+    setOverrideOutcome(session.outcome === "LTP_LOSS" ? "LTP_LOSS" : "NORMAL");
     const initialPayerMode = session.overridePayerMode ?? session.payerMode;
     setOverridePayerMode(initialPayerMode);
     if (initialPayerMode === "single") {
@@ -1821,6 +2412,7 @@ export default function HomePage() {
     try {
       const res = await fetch(`/api/session/history?sessionId=${session.id}`, {
         cache: "no-store",
+        headers: authHeaders(),
       });
       const data = await readJsonSafe<{ data?: OverrideHistoryEvent[]; error?: string }>(res);
       if (!res.ok) {
@@ -1851,6 +2443,64 @@ export default function HomePage() {
     setEditingSession(null);
   }
 
+  function openCancelSessionModal(session: LedgerSessionRow) {
+    if (session.state === "Cancelled") {
+      return;
+    }
+    if (session.state !== "Running" && session.state !== "Completed") {
+      pushToast("error", "Only running or completed unbilled sessions can be cancelled");
+      return;
+    }
+    setCancelSessionTarget(session);
+    setCancelReason("");
+  }
+
+  function closeCancelSessionModal() {
+    if (cancelBusy) {
+      return;
+    }
+    setCancelSessionTarget(null);
+    setCancelReason("");
+  }
+
+  async function submitCancelSession() {
+    if (!cancelSessionTarget || cancelBusy) {
+      return;
+    }
+    const reason = cancelReason.trim();
+    if (!reason) {
+      pushToast("error", "Cancellation reason is required");
+      return;
+    }
+
+    setCancelBusy(true);
+    try {
+      const res = await fetch("/api/session/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          sessionId: cancelSessionTarget.id,
+          reason,
+        }),
+      });
+      const data = await readJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        pushToast("error", data?.error ?? "Failed to cancel session");
+        return;
+      }
+
+      pushToast("success", "Session cancelled");
+      setCancelSessionTarget(null);
+      setCancelReason("");
+      await loadAllSessions();
+      await loadCompletedSessions();
+      await loadTables();
+      await loadUnpaidBills();
+    } finally {
+      setCancelBusy(false);
+    }
+  }
+
   async function submitSessionOverride() {
     if (!editingSession || overrideBusy) {
       return;
@@ -1859,6 +2509,7 @@ export default function HomePage() {
     const startRaw = overrideStartTime.trim();
     const endRaw = overrideEndTime.trim();
     const rateRaw = overrideRatePerMin.trim();
+    const playerNameRaw = overridePlayerName.trim();
 
     const startDate = startRaw
       ? buildDateTimeFromParts(startRaw, overrideStartIncludeDate ? overrideStartDate : undefined) ?? undefined
@@ -1869,26 +2520,30 @@ export default function HomePage() {
     const rate = rateRaw ? Number(rateRaw) : undefined;
 
     if (startRaw && !startDate) {
-      alert("Please enter a valid start time");
+      pushToast("error", "Please enter a valid start time");
       return;
     }
 
     if (endRaw && !endDate) {
-      alert("Please enter a valid end time");
+      pushToast("error", "Please enter a valid end time");
       return;
     }
 
     if (startDate && endDate && endDate.getTime() <= startDate.getTime()) {
-      alert("End time must be after start time");
+      pushToast("error", "End time must be after start time");
       return;
     }
 
     if (rate !== undefined && (!Number.isFinite(rate) || rate <= 0)) {
-      alert("Rate must be greater than 0");
+      pushToast("error", "Rate must be greater than 0");
       return;
     }
 
     const currentLifecycle = toLifecycleState(editingSession.state);
+    if ((currentLifecycle === "Running" || currentLifecycle === "Completed") && !playerNameRaw) {
+      pushToast("error", "Player name is required");
+      return;
+    }
     let overridePayerData: unknown = null;
     let includePayerOverride = false;
 
@@ -1896,7 +2551,7 @@ export default function HomePage() {
       if (overridePayerMode === "single") {
         const name = overrideSinglePayerName.trim();
         if (!name) {
-          alert("Single payer name is required");
+          pushToast("error", "Single payer name is required");
           return;
         }
         overridePayerData = { name };
@@ -1909,7 +2564,7 @@ export default function HomePage() {
             !Number.isFinite(Number(row.percentage)),
         );
         if (invalid) {
-          alert("All split names and percentages must be valid");
+          pushToast("error", "All split names and percentages must be valid");
           return;
         }
 
@@ -1919,7 +2574,7 @@ export default function HomePage() {
         }));
         const total = splitData.reduce((sum, row) => sum + row.percentage, 0);
         if (total !== 100) {
-          alert("Split percentage must sum to 100");
+          pushToast("error", "Split percentage must sum to 100");
           return;
         }
         overridePayerData = splitData;
@@ -1936,9 +2591,17 @@ export default function HomePage() {
     };
 
     if (currentLifecycle === "Running") {
-      if (!startDate && rate === undefined && !includePayerOverride) {
-        alert("For running sessions, update start time, rate, or payer");
+      if (
+        playerNameRaw === editingSession.playerName &&
+        !startDate &&
+        rate === undefined &&
+        !includePayerOverride
+      ) {
+        pushToast("error", "For running sessions, update player name, start time, rate, or payer");
         return;
+      }
+      if (playerNameRaw !== editingSession.playerName) {
+        payload.overridePlayerName = playerNameRaw;
       }
       if (startDate) {
         payload.overrideStartTime = startDate.toISOString();
@@ -1951,9 +2614,19 @@ export default function HomePage() {
         payload.overridePayerData = overridePayerData;
       }
     } else if (currentLifecycle === "Completed") {
-      if (!startDate && !endDate && rate === undefined && !includePayerOverride) {
-        alert("For completed sessions, update start time, end time, rate, or payer");
+      if (
+        playerNameRaw === editingSession.playerName &&
+        !startDate &&
+        !endDate &&
+        rate === undefined &&
+        overrideOutcome === editingSession.outcome &&
+        !includePayerOverride
+      ) {
+        pushToast("error", "For completed sessions, update player name, start time, end time, rate, or payer");
         return;
+      }
+      if (playerNameRaw !== editingSession.playerName) {
+        payload.overridePlayerName = playerNameRaw;
       }
       if (startDate) {
         payload.overrideStartTime = startDate.toISOString();
@@ -1968,6 +2641,9 @@ export default function HomePage() {
         payload.overridePayerMode = overridePayerMode;
         payload.overridePayerData = overridePayerData;
       }
+      if (overrideOutcome !== editingSession.outcome) {
+        payload.overrideOutcome = overrideOutcome;
+      }
     } else if (currentLifecycle === "Billed") {
       payload.overrideStatus = "completed";
     } else if (currentLifecycle === "Paid") {
@@ -1978,17 +2654,17 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/session/override", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(payload),
       });
       const data = await readJsonSafe<{ error?: string }>(res);
 
       if (!res.ok) {
-        alert(data?.error ?? "Failed to update session override");
+        pushToast("error", data?.error ?? "Failed to update session override");
         return;
       }
 
-      alert("Session override updated");
+      pushToast("success", "Session override updated");
       closeOverrideModal();
       await loadAllSessions();
       await loadTables();
@@ -1999,19 +2675,357 @@ export default function HomePage() {
     }
   }
 
+  function appendPinDigit(digit: string) {
+    if (loginBusy) {
+      return;
+    }
+    setLoginPin((prev) => {
+      const next = `${prev}${digit}`.replace(/\D/g, "").slice(0, 4);
+      return next;
+    });
+  }
+
+  function clearPin() {
+    if (loginBusy) {
+      return;
+    }
+    setLoginPin("");
+  }
+
+  function backspacePin() {
+    if (loginBusy) {
+      return;
+    }
+    setLoginPin((prev) => prev.slice(0, -1));
+  }
+
+  if (!authReady) {
+    return (
+      <main className={`min-h-screen bg-slate-100 p-4 sm:p-6 ${isDark ? "theme-dark" : ""}`}>
+        <div className="mx-auto mt-10 max-w-md rounded-xl border border-slate-300 bg-white p-6 shadow-md">
+          <p className="text-sm text-slate-600">Loading session...</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!activeUser) {
+    return (
+      <main className={`min-h-screen bg-slate-100 p-4 sm:p-6 ${isDark ? "theme-dark" : ""}`}>
+        <div className="mx-auto mt-4 flex min-h-[80vh] max-w-md items-center">
+          <div className="w-full rounded-2xl border border-slate-300 bg-white p-6 shadow-md sm:p-8">
+            <h1 className="text-center text-2xl font-bold text-slate-900">CueDesk Login</h1>
+            <p className="mt-2 text-center text-sm text-slate-600">
+            Login is required before any operation.
+            </p>
+
+            <input
+              value={loginPin}
+              onChange={(e) => setLoginPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="Enter 4-digit PIN"
+              inputMode="numeric"
+              maxLength={4}
+              className="mt-5 w-full rounded-xl border border-slate-300 bg-white px-4 py-4 text-center text-2xl tracking-[0.5em] text-slate-900"
+            />
+
+            <div className="mt-4 grid grid-cols-3 gap-3">
+              {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => (
+                <button
+                  key={digit}
+                  type="button"
+                  disabled={loginBusy}
+                  onClick={() => appendPinDigit(digit)}
+                  className="rounded-xl border border-slate-300 bg-white px-4 py-4 text-xl font-semibold text-slate-900 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  {digit}
+                </button>
+              ))}
+              <button
+                type="button"
+                disabled={loginBusy}
+                onClick={clearPin}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-4 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                disabled={loginBusy}
+                onClick={() => appendPinDigit("0")}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-4 text-xl font-semibold text-slate-900 hover:bg-slate-100 disabled:opacity-50"
+              >
+                0
+              </button>
+              <button
+                type="button"
+                disabled={loginBusy}
+                onClick={backspacePin}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-4 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Del
+              </button>
+            </div>
+
+            <button
+              type="button"
+              disabled={loginBusy || loginPin.trim().length !== 4}
+              onClick={() => void submitPinLogin()}
+              className="mt-4 w-full rounded-xl bg-slate-900 px-4 py-4 text-base font-semibold text-white hover:bg-slate-950 disabled:opacity-50"
+            >
+              {loginBusy ? "Logging in..." : "Login"}
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="mt-3 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-800 hover:bg-slate-100"
+            >
+              {isDark ? "Light Theme" : "Dark Theme"}
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className={`min-h-screen bg-slate-100 p-4 sm:p-6 ${isDark ? "theme-dark" : ""}`}>
-      <div className="mx-auto max-w-7xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-slate-900">CueDesk Dashboard</h1>
-          <button
-            type="button"
-            onClick={() => setIsDark((prev) => !prev)}
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-          >
-            {isDark ? "Light Theme" : "Dark Theme"}
-          </button>
+      {toasts.length > 0 ? (
+        <div className="fixed right-4 top-4 z-[100] flex w-[92vw] max-w-sm flex-col gap-2 sm:right-6 sm:top-6">
+          {toasts.map((toast) => {
+            const tone =
+              toast.kind === "success"
+                ? (isDark
+                  ? "border-emerald-700 bg-emerald-950/80 text-emerald-200"
+                  : "border-emerald-300 bg-emerald-50 text-emerald-900")
+                : toast.kind === "error"
+                  ? (isDark
+                    ? "border-red-700 bg-red-950/80 text-red-200"
+                    : "border-red-300 bg-red-50 text-red-900")
+                  : (isDark
+                    ? "border-slate-700 bg-slate-900/90 text-slate-100"
+                    : "border-slate-300 bg-slate-50 text-slate-900");
+            return (
+              <button
+                key={toast.id}
+                type="button"
+                onClick={() => removeToast(toast.id)}
+                className={`rounded-lg border px-3 py-2 text-left text-sm shadow ${tone}`}
+              >
+                {toast.text}
+              </button>
+            );
+          })}
         </div>
+      ) : null}
+      <div className="mx-auto max-w-7xl">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-slate-900">CueDesk Dashboard</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            {activeUser ? (
+              <p className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800">
+                {activeUser.name} ({activeUser.role})
+              </p>
+            ) : (
+              <>
+                <input
+                  value={loginPin}
+                  onChange={(e) => setLoginPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  placeholder="PIN"
+                  inputMode="numeric"
+                  maxLength={4}
+                  className="w-24 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800"
+                />
+                <button
+                  type="button"
+                  disabled={loginBusy}
+                  onClick={() => void submitPinLogin()}
+                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
+                >
+                  Login
+                </button>
+              </>
+            )}
+            {activeUser ? (
+              <button
+                type="button"
+                onClick={logout}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
+              >
+                Logout
+              </button>
+            ) : null}
+            {activeUser ? (
+              <button
+                type="button"
+                onClick={handleSwitchUser}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
+              >
+                Switch User
+              </button>
+            ) : null}
+            {canManage ? (
+              <Link
+                href="/management"
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
+              >
+                Management
+              </Link>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setShowReportsSidebar((prev) => !prev)}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
+            >
+              {showReportsSidebar ? "Hide Reports" : "Reports"}
+            </button>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
+            >
+              {isDark ? "Light Theme" : "Dark Theme"}
+            </button>
+          </div>
+        </div>
+
+        {showManagement && canManage ? (
+          <section className="mb-4 rounded-xl border border-slate-300 bg-white p-4 shadow-md">
+            <h2 className="text-lg font-semibold text-slate-900">Management</h2>
+            <div className="mt-3 grid gap-4 lg:grid-cols-2">
+              <section className="rounded-lg border border-slate-200 p-3">
+                <h3 className="text-sm font-semibold text-slate-900">Manage Tables</h3>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    value={newTableName}
+                    onChange={(e) => setNewTableName(e.target.value)}
+                    placeholder="Table name"
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs"
+                  />
+                  <input
+                    value={newTableRate}
+                    onChange={(e) => setNewTableRate(e.target.value)}
+                    placeholder="Rate/min"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void submitCreateTable()}
+                    className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700"
+                  >
+                    Add
+                  </button>
+                </div>
+                <div className="mt-2 max-h-40 overflow-auto rounded-md border border-slate-200">
+                  {tables.map((table) => (
+                    <div
+                      key={`manage-table-${table.id}`}
+                      className="flex items-center justify-between border-b border-slate-100 px-2 py-1 text-xs last:border-b-0"
+                    >
+                      <span>{table.name} - ₹{formatMoney(table.ratePerMin)}/min</span>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          disabled={tableManageBusyId === table.id}
+                          onClick={() => void editTableInline(table)}
+                          className="rounded bg-slate-200 px-2 py-0.5 text-[11px] text-slate-800 hover:bg-slate-300"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          disabled={tableManageBusyId === table.id}
+                          onClick={() => void deleteTableInline(table)}
+                          className="rounded bg-red-100 px-2 py-0.5 text-[11px] text-red-700 hover:bg-red-200"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-slate-200 p-3">
+                <h3 className="text-sm font-semibold text-slate-900">Manage Users</h3>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    value={newUserName}
+                    onChange={(e) => setNewUserName(e.target.value)}
+                    placeholder="User name"
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs"
+                  />
+                  <input
+                    value={newUserPin}
+                    onChange={(e) => setNewUserPin(e.target.value)}
+                    placeholder="PIN"
+                    inputMode="numeric"
+                    maxLength={4}
+                    className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs"
+                  />
+                  <select
+                    value={newUserRole}
+                    onChange={(e) => setNewUserRole(e.target.value as "operator" | "admin")}
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs"
+                  >
+                    <option value="operator">operator</option>
+                    <option value="admin">admin</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void submitCreateUser()}
+                    className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700"
+                  >
+                    Add
+                  </button>
+                </div>
+                <div className="mt-2 max-h-40 overflow-auto rounded-md border border-slate-200">
+                  {managementUsers.map((user) => (
+                    <div
+                      key={`manage-user-${user.id}`}
+                      className="flex items-center justify-between border-b border-slate-100 px-2 py-1 text-xs last:border-b-0"
+                    >
+                      <span>{user.name}</span>
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={user.role}
+                          disabled={userManageBusyId === user.id}
+                          onChange={(e) =>
+                            void updateUserInline(user.id, {
+                              role: e.target.value as "operator" | "admin",
+                            })}
+                          className="rounded border border-slate-300 px-1 py-0.5 text-[11px]"
+                        >
+                          <option value="operator">operator</option>
+                          <option value="admin">admin</option>
+                        </select>
+                        <button
+                          type="button"
+                          disabled={userManageBusyId === user.id}
+                          onClick={() => void updateUserInline(user.id, { isActive: !user.isActive })}
+                          className="rounded bg-slate-200 px-2 py-0.5 text-[11px] text-slate-800 hover:bg-slate-300"
+                        >
+                          {user.isActive ? "Deactivate" : "Activate"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={userManageBusyId === user.id}
+                          onClick={() => void deleteUserInline(user)}
+                          className="rounded bg-red-100 px-2 py-0.5 text-[11px] text-red-700 hover:bg-red-200"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          </section>
+        ) : null}
 
         {error ? (
           <p className="mb-4 rounded-md bg-red-100 p-3 text-sm text-red-700">{error}</p>
@@ -2037,7 +3051,8 @@ export default function HomePage() {
                     >
                       {section.rows.map((table) => {
                         const running = isRunningState(table.state);
-                        const minutes = elapsedMinutes(table.currentSession?.startTime);
+                        const startedAt = formatTime12h(table.currentSession?.startTime);
+                        const elapsed = formatElapsedFromStart(table.currentSession?.startTime);
                         const payerText = payerDisplayText(table);
                         const statusText = tableStateLabel(table.state);
                         const canStartSession = !running;
@@ -2061,7 +3076,9 @@ export default function HomePage() {
                                 <p className="mt-2 text-sm text-slate-800">
                                   Player: {table.currentSession?.playerName ?? "-"}
                                 </p>
-                                <p className="mt-1 text-sm text-slate-800">Timer: {minutes} min</p>
+                                <p className="mt-1 text-sm text-slate-800">
+                                  Started {startedAt} • {elapsed} elapsed
+                                </p>
                                 <p className="mt-1 text-sm text-slate-800">{payerText}</p>
                                 <div className="mt-3 flex gap-2">
                                   <button
@@ -2112,141 +3129,18 @@ export default function HomePage() {
             </section>
 
             <section className="mt-6 rounded-xl border border-slate-300 bg-white p-4 shadow-md">
-              <h2 className="text-lg font-semibold text-slate-900">Session Ledger</h2>
-              <div className="mt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => switchLedgerScope("current")}
-                  className={`rounded-md px-3 py-1 text-xs font-medium ${
-                    ledgerScope === "current" ? "bg-slate-900 text-white" : "bg-slate-200 text-slate-800"
-                  }`}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-lg font-semibold text-slate-900">Session Ledger (Current)</h2>
+                <Link
+                  href="/reports"
+                  className="rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900"
                 >
-                  Current (10 AM reset)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => switchLedgerScope("day")}
-                  className={`rounded-md px-3 py-1 text-xs font-medium ${
-                    ledgerScope === "day" ? "bg-slate-900 text-white" : "bg-slate-200 text-slate-800"
-                  }`}
-                >
-                  Previous By Date
-                </button>
-                <button
-                  type="button"
-                  onClick={() => switchLedgerScope("range")}
-                  className={`rounded-md px-3 py-1 text-xs font-medium ${
-                    ledgerScope === "range" ? "bg-slate-900 text-white" : "bg-slate-200 text-slate-800"
-                  }`}
-                >
-                  Date Range
-                </button>
+                  Open Reports
+                </Link>
               </div>
-              {ledgerScope === "day" ? (
-                <div className="mt-2 flex items-center gap-2 text-xs">
-                  <label className="text-slate-700">Business Date</label>
-                  <input
-                    type="date"
-                    value={ledgerDate}
-                    onChange={(e) => setLedgerDate(e.target.value)}
-                    className="rounded-md border border-slate-300 px-2 py-1 text-xs"
-                  />
-                </div>
-              ) : null}
-              {ledgerScope === "range" ? (
-                <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2">
-                  <p className="text-[11px] font-semibold text-slate-700">Date Range Filter</p>
-                  <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <input
-                      type="date"
-                      value={ledgerStartDate}
-                      onChange={(e) => setLedgerStartDate(e.target.value)}
-                      className="rounded-md border border-slate-300 px-2 py-1 text-xs"
-                    />
-                    <span className="text-xs text-slate-500">to</span>
-                    <input
-                      type="date"
-                      value={ledgerEndDate}
-                      onChange={(e) => setLedgerEndDate(e.target.value)}
-                      className="rounded-md border border-slate-300 px-2 py-1 text-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={applyRangeFilter}
-                      className="rounded-md bg-slate-800 px-2 py-1 text-xs font-medium text-white hover:bg-slate-900"
-                    >
-                      Apply
-                    </button>
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => applyPresetFilter("thisWeek")}
-                      className="rounded-md bg-slate-200 px-2 py-1 text-[11px] text-slate-800 hover:bg-slate-300"
-                    >
-                      This Week
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applyPresetFilter("thisMonth")}
-                      className="rounded-md bg-slate-200 px-2 py-1 text-[11px] text-slate-800 hover:bg-slate-300"
-                    >
-                      This Month
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applyPresetFilter("lastMonth")}
-                      className="rounded-md bg-slate-200 px-2 py-1 text-[11px] text-slate-800 hover:bg-slate-300"
-                    >
-                      Last Month
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applyPresetFilter("last7Days")}
-                      className="rounded-md bg-slate-200 px-2 py-1 text-[11px] text-slate-800 hover:bg-slate-300"
-                    >
-                      Last 7 Days
-                    </button>
-                  </div>
-                </div>
-              ) : null}
               <p className="mt-1 text-[11px] text-slate-600">
-                {ledgerScope === "current"
-                  ? `Business day: ${formatDateTimeFull(ledgerWindow.start)} to ${formatDateTimeFull(ledgerWindow.end)}`
-                  : ledgerScope === "day"
-                    ? `Business day ${ledgerWindow.key ?? ledgerDate}: ${formatDateTimeFull(
-                      ledgerWindow.start,
-                    )} to ${formatDateTimeFull(ledgerWindow.end)}`
-                    : `Filtered range: ${ledgerStartDate} to ${ledgerEndDate}`}
+                Business day: {formatDateTimeFull(ledgerWindow.start)} to {formatDateTimeFull(ledgerWindow.end)}
               </p>
-              <div className="mt-3 grid gap-2 text-xs md:grid-cols-3">
-                <div className="rounded border border-amber-200 bg-amber-50 p-2">
-                  <p className="mb-1 font-semibold text-amber-900">Revenue</p>
-                  <p>Subtotal: ₹{formatMoney(ledgerSummary.subtotal)}</p>
-                  <p>Discount: ₹{formatMoney(ledgerSummary.discount)}</p>
-                  <p className="font-semibold">Net: ₹{formatMoney(ledgerSummary.net)}</p>
-                </div>
-                <div className="rounded border border-slate-200 bg-slate-50 p-2">
-                  <p className="mb-1 font-semibold text-slate-800">Collection</p>
-                  <p>Cash: ₹{formatMoney(ledgerSummary.cash)}</p>
-                  <p>UPI: ₹{formatMoney(ledgerSummary.upi)}</p>
-                  <p>Card: ₹{formatMoney(ledgerSummary.card)}</p>
-                  <p>Due: ₹{formatMoney(ledgerSummary.due)}</p>
-                  <p>Due Received (included above): ₹{formatMoney(ledgerSummary.dueReceived)}</p>
-                  <p className="text-[11px] text-slate-600">
-                    Included split (Cash/UPI/Card): ₹{formatMoney(ledgerSummary.dueReceivedCash)} / ₹{formatMoney(
-                      ledgerSummary.dueReceivedUpi,
-                    )} / ₹{formatMoney(ledgerSummary.dueReceivedCard)}
-                  </p>
-                </div>
-                <div className="rounded border border-indigo-200 bg-indigo-50 p-2">
-                  <p className="mb-1 font-semibold text-indigo-900">Status</p>
-                  <p>Paid: ₹{formatMoney(ledgerSummary.paid)}</p>
-                  <p>Unpaid: ₹{formatMoney(ledgerSummary.unpaid)}</p>
-                  <p>Balance Check: {ledgerSummary.isBalanced ? "OK" : "Mismatch"}</p>
-                  <p className="font-semibold">Total: ₹{formatMoney(ledgerSummary.total)}</p>
-                </div>
-              </div>
               <p className="mt-1 text-xs text-slate-600">
                 <span className="mr-1 inline-block h-2 w-2 rounded-full bg-indigo-500 align-middle" />
                 Rows with overrides are marked.
@@ -2340,13 +3234,24 @@ export default function HomePage() {
                           >
                             History
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => openOverrideModal(row)}
-                            className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-white hover:bg-slate-900"
-                          >
-                            Edit
-                          </button>
+                          {row.state !== "Cancelled" ? (
+                            <button
+                              type="button"
+                              onClick={() => openOverrideModal(row)}
+                              className="mr-2 rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-white hover:bg-slate-900"
+                            >
+                              Edit
+                            </button>
+                          ) : null}
+                          {(row.state === "Running" || row.state === "Completed") ? (
+                            <button
+                              type="button"
+                              onClick={() => openCancelSessionModal(row)}
+                              className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700"
+                            >
+                              Cancel
+                            </button>
+                          ) : null}
                         </td>
                       </tr>
                       );
@@ -2655,318 +3560,62 @@ export default function HomePage() {
               )}
             </section>
 
-            <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-md">
-              <h2 className="text-xl font-semibold text-slate-900">Due Report</h2>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowDueReport((v) => {
-                    const next = !v;
-                    if (next) {
-                      void loadDueReport();
-                      void loadDueReportByBill();
-                    }
-                    return next;
-                  });
-                }}
-                className="mt-2 rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900"
-              >
-                {showDueReport ? "Hide Due Report" : "Show Due Report"}
-              </button>
-
-              {showDueReport ? (
-                <div className="mt-3">
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setDueViewMode("customer")}
-                      className={`rounded px-2 py-1 text-xs ${
-                        dueViewMode === "customer" ? "bg-slate-900 text-white" : "bg-slate-200 text-slate-800"
-                      }`}
-                    >
-                      Due by Customer
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDueViewMode("bill")}
-                      className={`rounded px-2 py-1 text-xs ${
-                        dueViewMode === "bill" ? "bg-slate-900 text-white" : "bg-slate-200 text-slate-800"
-                      }`}
-                    >
-                      Due by Bill
-                    </button>
-                  </div>
-
-                  {dueViewMode === "customer" ? (
-                    <div className="mt-3 max-h-56 space-y-2 overflow-auto">
-                      {dueReport.length === 0 ? (
-                        <p className="text-xs text-slate-600">No pending due entries.</p>
-                      ) : (
-                        dueReport.map((row) => (
-                          <div
-                            key={row.rowKey}
-                            className="rounded border border-slate-200 bg-white p-2 text-xs text-slate-700"
-                          >
-                            <p className="font-semibold">
-                              {row.customerName} ({row.customerPhone})
-                            </p>
-                            <p>Bills: {row.billCount}</p>
-                            <p>Due Amount: ₹{formatMoney(row.totalDue)}</p>
-                            <div className="mt-1 flex items-center gap-2">
-                              <select
-                                value={dueReceiveModes[row.rowKey] ?? "cash"}
-                                onChange={(e) =>
-                                  setDueReceiveModes((prev) => ({
-                                    ...prev,
-                                    [row.rowKey]: e.target.value as "cash" | "upi" | "card",
-                                  }))
-                                }
-                                disabled={dueReceiveBusyKey === row.rowKey}
-                                className="rounded border border-slate-300 px-2 py-1 text-xs"
-                              >
-                                <option value="cash">cash</option>
-                                <option value="upi">upi</option>
-                                <option value="card">card</option>
-                              </select>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={dueReceiveAmounts[row.rowKey] ?? String(row.totalDue)}
-                                onChange={(e) =>
-                                  setDueReceiveAmounts((prev) => ({
-                                    ...prev,
-                                    [row.rowKey]: e.target.value,
-                                  }))
-                                }
-                                disabled={dueReceiveBusyKey === row.rowKey}
-                                className="w-24 rounded border border-slate-300 px-2 py-1 text-xs"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => void receiveDuePayment(row)}
-                                disabled={dueReceiveBusyKey === row.rowKey}
-                                className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                              >
-                                Receive Payment
-                              </button>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  ) : (
-                    <div className="mt-3 max-h-56 space-y-2 overflow-auto">
-                      {dueReportByBill.length === 0 ? (
-                        <p className="text-xs text-slate-600">No pending bill-wise due entries.</p>
-                      ) : (
-                        dueReportByBill.map((row) => {
-                          const rowKey = `bill:${row.paymentId}`;
-                          return (
-                            <div
-                              key={row.paymentId}
-                              className="rounded border border-slate-200 bg-white p-2 text-xs text-slate-700"
-                            >
-                              <p className="font-semibold">
-                                Bill #{row.billId} {row.billDate ? `- ${formatDate(row.billDate)}` : ""}
-                              </p>
-                              <p>
-                                {row.customerName} ({row.customerPhone})
-                              </p>
-                              <p>Due Amount: ₹{formatMoney(row.dueAmount)}</p>
-                              <div className="mt-1 flex items-center gap-2">
-                                <select
-                                  value={dueReceiveModes[rowKey] ?? "cash"}
-                                  onChange={(e) =>
-                                    setDueReceiveModes((prev) => ({
-                                      ...prev,
-                                      [rowKey]: e.target.value as "cash" | "upi" | "card",
-                                    }))
-                                  }
-                                  disabled={dueReceiveBusyKey === rowKey}
-                                  className="rounded border border-slate-300 px-2 py-1 text-xs"
-                                >
-                                  <option value="cash">cash</option>
-                                  <option value="upi">upi</option>
-                                  <option value="card">card</option>
-                                </select>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  value={dueReceiveAmounts[rowKey] ?? String(row.dueAmount)}
-                                  onChange={(e) =>
-                                    setDueReceiveAmounts((prev) => ({
-                                      ...prev,
-                                      [rowKey]: e.target.value,
-                                    }))
-                                  }
-                                  disabled={dueReceiveBusyKey === rowKey}
-                                  className="w-24 rounded border border-slate-300 px-2 py-1 text-xs"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => void receiveDuePaymentByBill(row)}
-                                  disabled={dueReceiveBusyKey === rowKey}
-                                  className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                                >
-                                  Receive Payment
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </section>
-
-            <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-md">
-              <h2 className="text-xl font-semibold text-slate-900">Bills</h2>
-              <button
-                type="button"
-                onClick={() => setShowBillsPanel((prev) => !prev)}
-                className="mt-2 rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900"
-              >
-                {showBillsPanel ? "Hide Bills" : "Show Bills"}
-              </button>
-
-              {showBillsPanel ? (
-                <>
-                  <p className="mt-2 text-xs text-slate-600">
-                    Filter by date range, bill #, payer, and payment method.
-                  </p>
-
-                  <div className="mt-3 grid grid-cols-1 gap-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="date"
-                        value={billFilterStartDate}
-                        onChange={(e) => setBillFilterStartDate(e.target.value)}
-                        className="rounded border border-slate-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        type="date"
-                        value={billFilterEndDate}
-                        onChange={(e) => setBillFilterEndDate(e.target.value)}
-                        className="rounded border border-slate-300 px-2 py-1 text-xs"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="time"
-                        value={billFilterStartTime}
-                        onChange={(e) => setBillFilterStartTime(e.target.value)}
-                        className="rounded border border-slate-300 px-2 py-1 text-xs"
-                      />
-                      <input
-                        type="time"
-                        value={billFilterEndTime}
-                        onChange={(e) => setBillFilterEndTime(e.target.value)}
-                        className="rounded border border-slate-300 px-2 py-1 text-xs"
-                      />
-                    </div>
-                    <input
-                      type="text"
-                      value={billFilterId}
-                      onChange={(e) => setBillFilterId(e.target.value)}
-                      placeholder="Bill number"
-                      className="rounded border border-slate-300 px-2 py-1 text-xs"
-                    />
-                    <input
-                      type="text"
-                      value={billFilterPayer}
-                      onChange={(e) => setBillFilterPayer(e.target.value)}
-                      placeholder="Payer name"
-                      className="rounded border border-slate-300 px-2 py-1 text-xs"
-                    />
-                    <select
-                      value={billFilterPaymentMode}
-                      onChange={(e) => setBillFilterPaymentMode(e.target.value as "all" | PaymentMode)}
-                      className="rounded border border-slate-300 px-2 py-1 text-xs"
-                    >
-                      <option value="all">all methods</option>
-                      <option value="cash">cash</option>
-                      <option value="upi">upi</option>
-                      <option value="card">card</option>
-                      <option value="due">due</option>
-                    </select>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void loadBillSearch()}
-                        disabled={billSearchLoading}
-                        className="rounded bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-50"
-                      >
-                        {billSearchLoading ? "Loading..." : "Apply"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setBillFilterStartDate("");
-                          setBillFilterEndDate("");
-                          setBillFilterStartTime("");
-                          setBillFilterEndTime("");
-                          setBillFilterId("");
-                          setBillFilterPayer("");
-                          setBillFilterPaymentMode("all");
-                        }}
-                        className="rounded bg-slate-200 px-3 py-1 text-xs font-medium text-slate-800 hover:bg-slate-300"
-                      >
-                        Reset
-                      </button>
-                    </div>
-                  </div>
-
-                  {billSearchError ? (
-                    <p className="mt-2 text-xs text-red-600">{billSearchError}</p>
-                  ) : null}
-
-                  <div className="mt-3 max-h-64 overflow-auto rounded border border-slate-200">
-                    <table className="min-w-full text-left text-[11px]">
-                      <thead className="sticky top-0 bg-slate-100 text-slate-700">
-                        <tr>
-                          <th className="px-2 py-1">Bill</th>
-                          <th className="px-2 py-1">Date</th>
-                          <th className="px-2 py-1">Time</th>
-                          <th className="px-2 py-1">Payer</th>
-                          <th className="px-2 py-1">Modes</th>
-                          <th className="px-2 py-1">Total</th>
-                          <th className="px-2 py-1">Paid</th>
-                          <th className="px-2 py-1">Due</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {billSearchRows.map((row) => (
-                          <tr key={row.id} className="border-b border-slate-100">
-                            <td className="px-2 py-1">#{row.id}</td>
-                            <td className="px-2 py-1">{formatDate(row.createdAt)}</td>
-                            <td className="px-2 py-1">{formatTimeHHmm(row.createdAt)}</td>
-                            <td className="px-2 py-1">{row.payerNames.length ? row.payerNames.join(", ") : "-"}</td>
-                            <td className="px-2 py-1">{row.paymentModes.length ? row.paymentModes.join(", ") : "-"}</td>
-                            <td className="px-2 py-1">{formatMoney(row.discountedAmount)}</td>
-                            <td className="px-2 py-1">{formatMoney(row.paidAmount)}</td>
-                            <td className="px-2 py-1 font-semibold">{formatMoney(row.remainingAmount)}</td>
-                          </tr>
-                        ))}
-                        {billSearchRows.length === 0 ? (
-                          <tr>
-                            <td className="px-2 py-2 text-slate-500" colSpan={8}>
-                              No bills found for current filters.
-                            </td>
-                          </tr>
-                        ) : null}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              ) : null}
-            </section>
           </aside>
         </div>
       </div>
+
+      {showReportsSidebar ? (
+        <button
+          type="button"
+          aria-label="Close reports sidebar"
+          onClick={() => setShowReportsSidebar(false)}
+          className="fixed inset-0 z-30 bg-black/30"
+        />
+      ) : null}
+      <aside
+        className={`fixed right-0 top-0 z-40 h-full w-[min(88vw,320px)] border-l border-slate-300 bg-white p-4 shadow-2xl transition-transform duration-300 ${
+          showReportsSidebar ? "translate-x-0" : "translate-x-full"
+        }`}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Reports</h2>
+            <p className="mt-1 text-xs text-slate-600">
+              Open reports and analysis pages from here.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowReportsSidebar(false)}
+            className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100"
+          >
+            Close
+          </button>
+        </div>
+        <div className="mt-4 grid gap-2">
+          <Link
+            href="/reports"
+            onClick={() => setShowReportsSidebar(false)}
+            className="rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-900"
+          >
+            Session Reports
+          </Link>
+          <Link
+            href="/due-report"
+            onClick={() => setShowReportsSidebar(false)}
+            className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+          >
+            Due Report
+          </Link>
+          <Link
+            href="/bills"
+            onClick={() => setShowReportsSidebar(false)}
+            className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+          >
+            Bills
+          </Link>
+        </div>
+      </aside>
 
       {historySession ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -3036,7 +3685,16 @@ export default function HomePage() {
                       index === 0 || historyEvents[index - 1]?.actionLabel !== event.actionLabel;
                     const visibleDiffs =
                       event.action === "override_update"
-                        ? event.diffs.filter((diff) => diff.field.startsWith("override"))
+                        ? event.diffs.filter(
+                          (diff) =>
+                            diff.field.startsWith("override") ||
+                            diff.field === "playerName" ||
+                            diff.field === "outcome" ||
+                            diff.field === "amount" ||
+                            diff.field === "status" ||
+                            diff.field === "billId" ||
+                            diff.field === "cancellationReason",
+                        )
                         : event.diffs;
                     return (
                       <div key={event.id} className="rounded border border-slate-200 bg-slate-50 p-2">
@@ -3144,6 +3802,16 @@ export default function HomePage() {
               {currentLifecycle === "Running" || currentLifecycle === "Completed" ? (
                 <>
                   <div>
+                    <label className="mb-1 block text-sm text-slate-700">Player Name</label>
+                    <input
+                      value={overridePlayerName}
+                      onChange={(e) => setOverridePlayerName(e.target.value)}
+                      disabled={overrideBusy}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      placeholder="Enter player name"
+                    />
+                  </div>
+                  <div>
                     <label className="mb-1 block text-sm text-slate-700">Start Time</label>
                     <input
                       type="time"
@@ -3211,6 +3879,33 @@ export default function HomePage() {
                       className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                     />
                   </div>
+                  {currentLifecycle === "Completed" ? (
+                    <div>
+                      <label className="mb-1 block text-sm text-slate-700">Outcome</label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setOverrideOutcome("NORMAL")}
+                          disabled={overrideBusy}
+                          className={`rounded-md px-3 py-1 text-sm ${
+                            overrideOutcome === "NORMAL" ? "bg-slate-900 text-white" : "bg-slate-200"
+                          }`}
+                        >
+                          Normal
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setOverrideOutcome("LTP_LOSS")}
+                          disabled={overrideBusy}
+                          className={`rounded-md px-3 py-1 text-sm ${
+                            overrideOutcome === "LTP_LOSS" ? "bg-fuchsia-700 text-white" : "bg-slate-200"
+                          }`}
+                        >
+                          LTP Loss
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   <div>
                     <label className="mb-1 block text-sm text-slate-700">Payer Details</label>
                     <div className="flex gap-2">
@@ -3297,6 +3992,14 @@ export default function HomePage() {
                       >
                         Add Row
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setOverrideSplitRows((prev) => applyEqualSplit(prev))}
+                        disabled={overrideBusy}
+                        className="rounded-md bg-blue-100 px-3 py-2 text-sm text-blue-800 hover:bg-blue-200 disabled:opacity-50"
+                      >
+                        Split Equally
+                      </button>
                     </div>
                   ) : null}
                 </>
@@ -3340,6 +4043,49 @@ export default function HomePage() {
         </div>
       ) : null}
 
+      {cancelSessionTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-4">
+            <h3 className="text-lg font-semibold text-slate-900">
+              Cancel Session - #{cancelSessionTarget.id}
+            </h3>
+            <p className="mt-1 text-xs text-slate-600">
+              {cancelSessionTarget.tableName} | {cancelSessionTarget.playerName}
+            </p>
+
+            <div className="mt-3">
+              <label className="mb-1 block text-sm text-slate-700">Cancellation Reason</label>
+              <textarea
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                disabled={cancelBusy}
+                className="min-h-[92px] w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Enter reason"
+              />
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeCancelSessionModal}
+                disabled={cancelBusy}
+                className="rounded-md bg-slate-200 px-3 py-2 text-sm disabled:opacity-50"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitCancelSession()}
+                disabled={cancelBusy}
+                className="rounded-md bg-red-600 px-3 py-2 text-sm text-white disabled:opacity-50"
+              >
+                Cancel Session
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {startTable ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-lg bg-white p-4">
@@ -3350,13 +4096,52 @@ export default function HomePage() {
             <div className="mt-3 space-y-3">
               <div>
                 <label className="mb-1 block text-sm text-slate-700">Player Name</label>
-                <input
-                  value={startPlayerName}
-                  onChange={(e) => setStartPlayerName(e.target.value)}
-                  disabled={busyTableId === startTable.id}
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  placeholder="Enter player name"
-                />
+                <div className="relative">
+                  <div className="flex gap-2">
+                    <input
+                      value={startPlayerName}
+                      onFocus={() => setShowStartPlayerSuggestions(true)}
+                      onChange={(e) => {
+                        setStartPlayerName(e.target.value);
+                        setShowStartPlayerSuggestions(true);
+                      }}
+                      disabled={busyTableId === startTable.id}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      placeholder="Enter player name or phone"
+                    />
+                    <button
+                      type="button"
+                      onClick={startPlayerVoiceInput}
+                      disabled={busyTableId === startTable.id}
+                      className={`rounded-md px-3 py-2 text-xs font-medium text-white ${
+                        startVoiceListening ? "bg-red-600 hover:bg-red-700" : "bg-slate-700 hover:bg-slate-800"
+                      }`}
+                    >
+                      {startVoiceListening ? "Stop" : "Speak"}
+                    </button>
+                  </div>
+                  {showStartPlayerSuggestions && startPlayerSuggestions.length > 0 ? (
+                    <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-40 overflow-auto rounded-md border border-slate-200 bg-white shadow-lg">
+                      {startPlayerSuggestions.map((customer) => (
+                        <button
+                          key={customer.id}
+                          type="button"
+                          onClick={() => {
+                            setStartPlayerName(customer.name);
+                            setShowStartPlayerSuggestions(false);
+                          }}
+                          className="flex w-full items-center justify-between border-b border-slate-100 px-3 py-2 text-left text-xs hover:bg-slate-50"
+                        >
+                          <span className="font-medium text-slate-800">{customer.name}</span>
+                          <span className="text-slate-600">{customer.phone}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Leave empty to auto-use a generic walk-in name.
+                </p>
               </div>
 
               <div>
@@ -3421,7 +4206,7 @@ export default function HomePage() {
             </h3>
 
             <div className="mt-3 space-y-3">
-              {endTable.state === "Running-NoPayer" ? (
+              {endTable.state === "Running-NoPayer" && !endAsLtpLoss ? (
                 <div>
                   <label className="mb-1 block text-sm text-slate-700">Payer Name</label>
                   <input
@@ -3464,6 +4249,15 @@ export default function HomePage() {
                   />
                 ) : null}
               </div>
+              <label className="flex items-center gap-2 rounded border border-fuchsia-200 bg-fuchsia-50 px-3 py-2 text-sm text-fuchsia-900">
+                <input
+                  type="checkbox"
+                  checked={endAsLtpLoss}
+                  onChange={(e) => setEndAsLtpLoss(e.target.checked)}
+                  disabled={busyTableId === endTable.id}
+                />
+                End as LTP Loss (No charge)
+              </label>
             </div>
 
             <div className="mt-4 flex justify-end gap-2">
@@ -3479,9 +4273,11 @@ export default function HomePage() {
                 type="button"
                 onClick={() => void submitEndSession()}
                 disabled={busyTableId === endTable.id}
-                className="rounded-md bg-red-600 px-3 py-2 text-sm text-white disabled:opacity-50"
+                className={`rounded-md px-3 py-2 text-sm text-white disabled:opacity-50 ${
+                  endAsLtpLoss ? "bg-fuchsia-600" : "bg-red-600"
+                }`}
               >
-                End Session
+                {endAsLtpLoss ? "End as LTP Loss" : "End Session"}
               </button>
             </div>
           </div>
@@ -3559,6 +4355,13 @@ export default function HomePage() {
                   className="rounded-md bg-slate-200 px-3 py-2 text-sm"
                 >
                   Add Row
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSplitRows((prev) => applyEqualSplit(prev))}
+                  className="rounded-md bg-blue-100 px-3 py-2 text-sm text-blue-800 hover:bg-blue-200"
+                >
+                  Split Equally
                 </button>
               </div>
             )}

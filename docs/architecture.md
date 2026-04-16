@@ -12,8 +12,10 @@ Flow:
 ## 2. Runtime Components
 - **UI layer**: `src/app/page.tsx`
 - **API layer**: `src/app/api/**/route.ts`
+- **Auth provider**: `src/components/auth-provider.tsx`
 - **Domain/service layer**: `src/lib/services/*.ts`
 - **Derived state helpers**: `src/lib/session-status.ts`, `src/lib/state-machine.ts`
+- **Authorization helpers**: `src/lib/authz.ts`
 - **Persistence**: Prisma + SQLite (`prisma/dev.db`)
 
 ## 3. Data Model
@@ -52,6 +54,7 @@ Defined in `prisma/schema.prisma`.
 3. Billing linkage uses `billId != null`.
 4. Effective session status uses override fallback:
    - `effectiveStatus = overrideStatus ?? status`
+5. API authorization is backend enforced by role checks.
 
 ## 5. Session Lifecycle
 Canonical progression:
@@ -136,5 +139,6 @@ Unit tests exist under `src/tests` for:
 - billing + discounts
 - payment constraints
 - status derivation helpers
+- user management and auth-adjacent flows
 
 This keeps rules deterministic and protects against regressions during UI iteration.

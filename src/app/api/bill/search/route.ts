@@ -1,7 +1,9 @@
+import { requireOperatorOrAdmin } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getCollectedPaidAmount, getEffectiveBillTotals } from "@/lib/billTotals";
 
 type PaymentMode = "cash" | "upi" | "card" | "due";
+const PAYMENT_MODE_ORDER: PaymentMode[] = ["cash", "upi", "card", "due"];
 
 function parseDateStart(value: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -71,6 +73,7 @@ function getPayerNamesForSession(session: {
 
 export async function GET(request: Request) {
   try {
+    await requireOperatorOrAdmin(prisma, request);
     const { searchParams } = new URL(request.url);
     const billIdRaw = searchParams.get("billId");
     const payerRaw = (searchParams.get("payer") ?? "").trim().toLowerCase();
@@ -189,6 +192,20 @@ export async function GET(request: Request) {
         );
 
         const paymentModes = Array.from(new Set(bill.payments.map((payment) => payment.mode)));
+        const paymentSplit = PAYMENT_MODE_ORDER
+          .map((mode) => ({
+            mode,
+            amount: getCollectedPaidAmount(
+              bill.payments
+                .filter((payment) => payment.mode === mode)
+                .map((payment) => ({
+                  amount: payment.amount,
+                  mode: payment.mode,
+                  dueSettledAt: payment.dueSettledAt,
+                })),
+            ),
+          }))
+          .filter((entry) => entry.amount > 0);
 
         return {
           id: bill.id,
@@ -201,11 +218,12 @@ export async function GET(request: Request) {
           remainingAmount: totals.remainingAmount,
           payerNames,
           paymentModes,
+          paymentSplit,
           paymentCount: bill.payments.length,
         };
       })
       .filter((row) => {
-        if (paymentMode !== "all" && !row.paymentModes.includes(paymentMode)) {
+        if (paymentMode !== "all" && !row.paymentSplit.some((entry) => entry.mode === paymentMode)) {
           return false;
         }
         if (payerRaw) {
@@ -220,6 +238,7 @@ export async function GET(request: Request) {
     return Response.json({ data: rows }, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    return Response.json({ error: message }, { status: 400 });
+    const status = message.startsWith("Unauthorized") ? 401 : message.startsWith("Forbidden") ? 403 : 400;
+    return Response.json({ error: message }, { status });
   }
 }

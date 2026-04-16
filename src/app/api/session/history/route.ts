@@ -1,8 +1,10 @@
+import { requireOperatorOrAdmin } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { sessionService } from "@/lib/services/sessionService";
 
 export async function GET(request: Request) {
   try {
+    await requireOperatorOrAdmin(prisma, request);
     const { searchParams } = new URL(request.url);
     const sessionIdRaw = searchParams.get("sessionId");
     const sessionId = sessionIdRaw ? Number(sessionIdRaw) : Number.NaN;
@@ -18,7 +20,7 @@ export async function GET(request: Request) {
     return Response.json({ data }, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    return Response.json({ error: message }, { status: 400 });
+    const status = message.startsWith("Unauthorized") ? 401 : message.startsWith("Forbidden") ? 403 : 400;
+    return Response.json({ error: message }, { status });
   }
 }
-

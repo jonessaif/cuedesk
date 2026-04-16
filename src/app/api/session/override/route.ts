@@ -1,12 +1,15 @@
+import { requireOperatorOrAdmin } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { sessionService } from "@/lib/services/sessionService";
 
 type OverridePayerMode = "none" | "single" | "split";
 type OverrideStatus = "running" | "completed" | "billed" | "default";
+type OverrideOutcome = "NORMAL" | "LTP_LOSS";
 type PaymentMode = "cash" | "upi" | "card" | "due";
 
 export async function POST(request: Request) {
   try {
+    await requireOperatorOrAdmin(prisma, request);
     const body = await request.json();
 
     if (!body || typeof body !== "object") {
@@ -22,12 +25,14 @@ export async function POST(request: Request) {
     }
 
     if (
+      body.overridePlayerName === undefined &&
       body.overrideStartTime === undefined &&
       body.overrideEndTime === undefined &&
       body.overrideRatePerMin === undefined &&
       body.overridePayerMode === undefined &&
       body.overridePayerData === undefined &&
       body.overrideStatus === undefined &&
+      body.overrideOutcome === undefined &&
       body.overridePaymentModes === undefined
     ) {
       return Response.json({ error: "No override fields provided" }, { status: 400 });
@@ -49,6 +54,12 @@ export async function POST(request: Request) {
       body.overrideRatePerMin === undefined
         ? undefined
         : Number(body.overrideRatePerMin);
+    const overridePlayerName =
+      body.overridePlayerName === undefined
+        ? undefined
+        : typeof body.overridePlayerName === "string"
+          ? body.overridePlayerName.trim()
+          : null;
     const overridePayerModeRaw =
       body.overridePayerMode === undefined
         ? undefined
@@ -56,6 +67,8 @@ export async function POST(request: Request) {
     const overridePayerData = body.overridePayerData;
     const overrideStatusRaw =
       body.overrideStatus === undefined ? undefined : String(body.overrideStatus);
+    const overrideOutcomeRaw =
+      body.overrideOutcome === undefined ? undefined : String(body.overrideOutcome).toUpperCase();
     const overridePaymentModesRaw = body.overridePaymentModes;
     const adminOverride =
       body.adminOverride === undefined ? undefined : Boolean(body.adminOverride);
@@ -81,6 +94,10 @@ export async function POST(request: Request) {
       return Response.json({ error: "Invalid overrideRatePerMin" }, { status: 400 });
     }
 
+    if (overridePlayerName === null || (overridePlayerName !== undefined && overridePlayerName === "")) {
+      return Response.json({ error: "Invalid overridePlayerName" }, { status: 400 });
+    }
+
     if (
       overridePayerModeRaw !== undefined &&
       overridePayerModeRaw !== "none" &&
@@ -102,6 +119,14 @@ export async function POST(request: Request) {
     }
 
     const overrideStatus = overrideStatusRaw as OverrideStatus | undefined;
+    if (
+      overrideOutcomeRaw !== undefined &&
+      overrideOutcomeRaw !== "NORMAL" &&
+      overrideOutcomeRaw !== "LTP_LOSS"
+    ) {
+      return Response.json({ error: "Invalid overrideOutcome" }, { status: 400 });
+    }
+    const overrideOutcome = overrideOutcomeRaw as OverrideOutcome | undefined;
 
     let overridePaymentModes: PaymentMode[] | null | undefined;
     if (overridePaymentModesRaw !== undefined) {
@@ -156,12 +181,14 @@ export async function POST(request: Request) {
 
     const session = await sessionService.overrideSession(prisma as never, {
       sessionId: body.sessionId,
+      overridePlayerName,
       overrideStartTime,
       overrideEndTime,
       overrideRatePerMin,
       overridePayerMode,
       overridePayerData,
       overrideStatus,
+      overrideOutcome,
       overridePaymentModes,
       adminOverride,
     });
@@ -169,6 +196,7 @@ export async function POST(request: Request) {
     return Response.json(session, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    return Response.json({ error: message }, { status: 400 });
+    const status = message.startsWith("Unauthorized") ? 401 : message.startsWith("Forbidden") ? 403 : 400;
+    return Response.json({ error: message }, { status });
   }
 }

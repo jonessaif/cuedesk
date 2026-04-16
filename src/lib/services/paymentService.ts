@@ -43,6 +43,25 @@ export const paymentService = {
       throw new Error("Bill not found");
     }
 
+    const linkedSessions = await (
+      sessionModel as {
+        findMany: (args: {
+          where: { billId: number };
+          select: { id: true; outcome: true };
+        }) => Promise<Array<{ id: number; outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED" }>>;
+      }
+    ).findMany({
+      where: { billId: input.billId },
+      select: { id: true, outcome: true },
+    });
+
+    const hasNonBillableOutcome = linkedSessions.some(
+      (session) => session.outcome === "LTP_LOSS" || session.outcome === "CANCELLED",
+    );
+    if (hasNonBillableOutcome) {
+      throw new Error("Cannot add payment to non-billable session bill");
+    }
+
     const payments = await (
       paymentModel as {
         findMany: (args: { where: { billId: number } }) => Promise<
@@ -422,6 +441,8 @@ export const paymentService = {
               billId: number;
               amount: number;
               mode: string;
+              dueSettledAt?: Date | null;
+              dueReceivedMode?: string | null;
             };
           }) => Promise<unknown>;
         }

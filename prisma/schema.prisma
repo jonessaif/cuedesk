@@ -12,8 +12,33 @@ model Table {
   name       String    @unique
   ratePerMin Float
   sessions   Session[]
+  sectionAssignments TableSectionAssignment[]
 
   @@map("tables")
+}
+
+model TableSection {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  assignments TableSectionAssignment[]
+
+  @@map("table_sections")
+}
+
+model TableSectionAssignment {
+  id        Int @id @default(autoincrement())
+  tableId   Int @unique
+  sectionId Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  table   Table       @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  section TableSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@index([sectionId])
+  @@map("table_section_assignments")
 }
 
 model Session {
@@ -33,7 +58,10 @@ model Session {
   overrideEndTime DateTime?
   overrideRatePerMin Int?
   status    SessionStatus @default(running)
+  outcome   SessionOutcome @default(NORMAL)
   amount    Float?
+  cancellationReason String?
+  canceledAt DateTime?
   billId    Int?
 
   table Table @relation(fields: [tableId], references: [id])
@@ -123,6 +151,29 @@ model Customer {
   @@map("customers")
 }
 
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  pinHash   String
+  role      UserRole @default(operator)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@unique([pinHash])
+  @@map("users")
+}
+
+model AppConfig {
+  id                Int      @id @default(autoincrement())
+  ledgerResetMinutes Int     @default(600)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("app_config")
+}
+
 enum PayerMode {
   none
   single
@@ -140,4 +191,15 @@ enum PaymentMode {
   upi
   card
   due
+}
+
+enum SessionOutcome {
+  NORMAL
+  LTP_LOSS
+  CANCELLED
+}
+
+enum UserRole {
+  operator
+  admin
 }

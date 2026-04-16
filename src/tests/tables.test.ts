@@ -55,6 +55,35 @@ function createPrismaMock(seedTables: TableRow[] = []): PrismaClient {
               .slice(0, 1),
           })),
     },
+    session: {
+      findMany: async ({
+        where,
+      }: {
+        where: {
+          tableId: { in: number[] };
+          OR: Array<{ status: SessionStatus } | { overrideStatus: SessionStatus }>;
+        };
+      }) => {
+        const ids = new Set(where.tableId.in);
+        return tables
+          .flatMap((t) => t.sessions)
+          .filter((s) => ids.has(s.tableId) && s.status === "running")
+          .sort((a, b) => b.startTime.getTime() - a.startTime.getTime())
+          .map((s) => ({
+            id: s.id,
+            tableId: s.tableId,
+            playerName: s.playerName,
+            startTime: s.startTime,
+            status: s.status,
+            billId: s.billId,
+            payerMode: s.payerMode,
+            payerData: s.payerData,
+            overridePayerMode: null,
+            overridePayerData: null,
+            overrideStatus: null,
+          }));
+      },
+    },
   } as unknown as PrismaClient;
 }
 
@@ -194,5 +223,46 @@ describe("Tables module", () => {
 
     const rows = await listTablesWithState(prisma);
     expect(rows[0].state).toBe("Billed");
+  });
+
+  it("should prioritize running session even when latest by time is completed", async () => {
+    const now = new Date("2026-04-15T12:00:00.000Z");
+    const prisma = createPrismaMock([
+      {
+        id: 1,
+        name: "S1",
+        ratePerMin: 6,
+        sessions: [
+          {
+            id: 101,
+            tableId: 1,
+            playerName: "Older Running",
+            payerMode: "none",
+            payerData: null,
+            startTime: new Date("2026-04-15T08:00:00.000Z"),
+            endTime: null,
+            status: "running",
+            amount: null,
+            billId: null,
+          },
+          {
+            id: 102,
+            tableId: 1,
+            playerName: "Newer Completed",
+            payerMode: "single",
+            payerData: { name: "A" },
+            startTime: new Date(now.getTime() - 60_000),
+            endTime: now,
+            status: "completed",
+            amount: 6,
+            billId: null,
+          },
+        ],
+      },
+    ]);
+
+    const rows = await listTablesWithState(prisma);
+    expect(rows[0].state).toBe("Running-NoPayer");
+    expect(rows[0].currentSession?.playerName).toBe("Older Running");
   });
 });

@@ -158,4 +158,32 @@ describe("Payments module", () => {
       }),
     ).rejects.toThrow("Bill not found");
   });
+
+  it("should reject payment when bill has LTP sessions", async () => {
+    const prisma = {
+      bills: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 10,
+          totalAmount: 300,
+          discountType: null,
+          discountedAmount: 300,
+        }),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+      },
+      sessions: {
+        findMany: vi.fn().mockResolvedValue([{ id: 1, outcome: "LTP_LOSS" }]),
+      },
+    };
+
+    await expect(
+      paymentService.addPayment(prisma as never, {
+        billId: 10,
+        amount: 50,
+        mode: "cash",
+      }),
+    ).rejects.toThrow("Cannot add payment to non-billable session bill");
+  });
 });

@@ -1,5 +1,6 @@
 import { getEffectiveBillTotals, roundMoney } from "@/lib/billTotals";
-import { getBusinessDayRange, getBusinessDayRangeFromKey } from "@/lib/businessDay";
+import { getBusinessDayRangeWithReset, getBusinessDayRangeFromKeyWithReset } from "@/lib/businessDay";
+import { getLedgerResetMinutesCached, hydrateLedgerResetMinutesCache } from "@/lib/settings-service";
 import {
   getEffectiveStatus,
   getLedgerStatus,
@@ -57,6 +58,22 @@ function normalizePayerMode(value: unknown): "none" | "single" | "split" {
     return value;
   }
   return "none";
+}
+
+function normalizeSessionOutcome(value: unknown): "NORMAL" | "LTP_LOSS" | "CANCELLED" {
+  if (value === "LTP_LOSS" || value === "CANCELLED" || value === "NORMAL") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toUpperCase();
+    if (normalized === "LTP_LOSS" || normalized === "LTP-LOSS" || normalized === "LTP") {
+      return "LTP_LOSS";
+    }
+    if (normalized === "CANCELLED" || normalized === "CANCELED") {
+      return "CANCELLED";
+    }
+  }
+  return "NORMAL";
 }
 
 function getEffectivePayerMode(session: {
@@ -183,7 +200,18 @@ function deriveLedgerState(input: {
   billId: number | null;
   paidAmount: number;
   amount: number;
-}): "Running" | "Completed" | "Billed-Unpaid" | "Partially-Paid" | "Paid" {
+  outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
+  cancellationReason?: string | null;
+}): "Running" | "Completed" | "Billed-Unpaid" | "Partially-Paid" | "Paid" | "Cancelled" | "LTP-Loss" {
+  if (input.outcome === "LTP_LOSS") {
+    return "LTP-Loss";
+  }
+  if (input.outcome === "CANCELLED") {
+    return "Cancelled";
+  }
+  if (typeof input.cancellationReason === "string" && input.cancellationReason.trim() !== "") {
+    return "Cancelled";
+  }
   return getLedgerStatus({
     effectiveStatus: input.status,
     billId: input.billId,
@@ -260,7 +288,10 @@ function distributeProportionally(
 }
 
 type SessionOverrideAuditSource = {
+  playerName?: string;
   status: "running" | "completed" | "billed";
+  outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
+  cancellationReason?: string | null;
   billId: number | null;
   amount?: number | null;
   overrideStartTime?: Date | null;
@@ -287,7 +318,10 @@ function toIso(value: Date | null | undefined): string | null {
 
 function buildOverrideAuditSnapshot(session: SessionOverrideAuditSource) {
   return {
+    playerName: session.playerName ?? "",
     status: session.status,
+    outcome: session.outcome ?? "NORMAL",
+    cancellationReason: session.cancellationReason ?? null,
     billId: session.billId,
     amount: typeof session.amount === "number" ? roundMoney(session.amount) : 0,
     overrideStartTime: toIso(session.overrideStartTime),
@@ -336,19 +370,22 @@ function toHistoryActionLabel(action: string): string {
   if (action === "override_update") {
     return "Override Updated";
   }
+  if (action === "session_cancelled") {
+    return "Session Cancelled";
+  }
   return action.replaceAll("_", " ");
 }
 
 function toBusinessDayStart(input: Date): Date {
-  return getBusinessDayRange(input).start;
+  return getBusinessDayRangeWithReset(input, getLedgerResetMinutesCached()).start;
 }
 
 function toBusinessDayKeyFromDate(input: Date): string {
-  return getBusinessDayRange(input).key;
+  return getBusinessDayRangeWithReset(input, getLedgerResetMinutesCached()).key;
 }
 
 function toBusinessDayWindowFromKey(key: string): { start: Date; end: Date } {
-  const range = getBusinessDayRangeFromKey(key);
+  const range = getBusinessDayRangeFromKeyWithReset(key, getLedgerResetMinutesCached());
   return { start: range.start, end: range.end };
 }
 
@@ -375,11 +412,18 @@ function normalizeRangeInput(
   return { startDate, endDate };
 }
 
+async function ensureLedgerResetHydrated(prisma: unknown): Promise<void> {
+  await hydrateLedgerResetMinutesCache(
+    prisma as Parameters<typeof hydrateLedgerResetMinutesCache>[0],
+  );
+}
+
 export const sessionService = {
   async startSession(
     prisma: unknown,
-    input: { tableId: number; playerName: string },
+    input: { tableId: number; playerName: string; startTime?: Date },
   ) {
+    await ensureLedgerResetHydrated(prisma);
     const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
       (prisma as { session?: unknown; sessions?: unknown }).sessions;
 
@@ -398,7 +442,7 @@ export const sessionService = {
       throw new Error("Session already running");
     }
 
-    const now = new Date();
+    const startTime = input.startTime ?? new Date();
 
     return (
       sessionModel as {
@@ -408,6 +452,7 @@ export const sessionService = {
             businessDayKey: string;
             playerName: string;
             status: string;
+            outcome: "NORMAL";
             startTime: Date;
           };
         }) => Promise<unknown>;
@@ -415,18 +460,20 @@ export const sessionService = {
     ).create({
       data: {
         tableId: input.tableId,
-        businessDayKey: toBusinessDayKeyFromDate(now),
+        businessDayKey: toBusinessDayKeyFromDate(startTime),
         playerName: input.playerName,
         status: "running",
-        startTime: now,
+        outcome: "NORMAL",
+        startTime,
       },
     });
   },
 
   async endSession(
     prisma: unknown,
-    input: { tableId: number; now: Date },
+    input: { tableId: number; now: Date; outcome?: "NORMAL" | "LTP_LOSS" },
   ) {
+    await ensureLedgerResetHydrated(prisma);
     const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
       (prisma as { session?: unknown; sessions?: unknown }).sessions;
     const tableModel = (prisma as { table?: unknown; tables?: unknown }).table ??
@@ -489,6 +536,7 @@ export const sessionService = {
             status: string;
             endTime: Date;
             amount: number;
+            outcome: "NORMAL" | "LTP_LOSS";
             overrideStatus: null;
           };
         }) => Promise<unknown>;
@@ -498,27 +546,180 @@ export const sessionService = {
       data: {
         status: "completed",
         endTime: input.now,
-        amount,
+        amount: input.outcome === "LTP_LOSS" ? 0 : amount,
+        outcome: input.outcome ?? "NORMAL",
         overrideStatus: null,
       },
     });
+  },
+
+  async cancelSession(
+    prisma: unknown,
+    input: { sessionId: number; reason: string; now?: Date; changedBy?: string },
+  ) {
+    await ensureLedgerResetHydrated(prisma);
+    const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
+      (prisma as { session?: unknown; sessions?: unknown }).sessions;
+    const paymentModel = (prisma as { payment?: unknown; payments?: unknown }).payment ??
+      (prisma as { payment?: unknown; payments?: unknown }).payments;
+    const overrideEventModel = (prisma as {
+      sessionOverrideEvent?: unknown;
+      sessionOverrideEvents?: unknown;
+    }).sessionOverrideEvent ??
+      (prisma as {
+        sessionOverrideEvent?: unknown;
+        sessionOverrideEvents?: unknown;
+      }).sessionOverrideEvents;
+
+    const reason = input.reason.trim();
+    if (!reason) {
+      throw new Error("Cancellation reason is required");
+    }
+
+    const session = (await (
+      sessionModel as {
+        findUnique: (args: { where: { id: number } }) => Promise<unknown>;
+      }
+    ).findUnique({
+      where: { id: input.sessionId },
+    })) as {
+      id: number;
+      status: "running" | "completed" | "billed";
+      outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
+      overrideStatus?: string | null;
+      startTime: Date;
+      endTime: Date | null;
+      overrideEndTime?: Date | null;
+      amount?: number | null;
+      billId: number | null;
+      cancellationReason?: string | null;
+      canceledAt?: Date | null;
+    } | null;
+
+    if (!session) {
+      throw new Error("Session not found");
+    }
+
+    if (session.cancellationReason) {
+      throw new Error("Session already cancelled");
+    }
+    if (session.outcome === "LTP_LOSS") {
+      throw new Error("LTP loss session cannot be cancelled");
+    }
+
+    if (session.billId !== null) {
+      const payments = await (
+        paymentModel as {
+          findMany: (args: {
+            where: { billId: number };
+            select: { id: true };
+          }) => Promise<Array<{ id: number }>>;
+        }
+      ).findMany({
+        where: { billId: session.billId },
+        select: { id: true },
+      });
+      if (payments.length > 0) {
+        throw new Error("Cannot cancel billed/paid session");
+      }
+      throw new Error("Cannot cancel billed/paid session");
+    }
+
+    const now = input.now ?? new Date();
+    const updatedSession = await (
+      sessionModel as {
+        update: (args: {
+          where: { id: number };
+          data: {
+            status: "completed";
+            endTime: Date;
+            overrideStatus: null;
+            overrideEndTime: null;
+            amount: number;
+            outcome: "CANCELLED";
+            cancellationReason: string;
+            canceledAt: Date;
+          };
+        }) => Promise<unknown>;
+      }
+    ).update({
+      where: { id: session.id },
+      data: {
+        status: "completed",
+        endTime: session.endTime ?? now,
+        overrideStatus: null,
+        overrideEndTime: null,
+        amount: 0,
+        outcome: "CANCELLED",
+        cancellationReason: reason,
+        canceledAt: now,
+      },
+    });
+
+    if (overrideEventModel) {
+      const beforeData = {
+        status: session.status,
+        outcome: session.outcome ?? "NORMAL",
+        billId: session.billId,
+        amount: typeof session.amount === "number" ? roundMoney(session.amount) : 0,
+        cancellationReason: session.cancellationReason ?? null,
+        canceledAt: toIso(session.canceledAt),
+      };
+      const afterData = {
+        status: "completed",
+        outcome: "CANCELLED",
+        billId: null,
+        amount: 0,
+        cancellationReason: reason,
+        canceledAt: now.toISOString(),
+        changedBy: input.changedBy?.trim() || "Operator",
+      };
+      const changedFields = buildAuditDiffEntries(beforeData, afterData);
+
+      await (
+        overrideEventModel as {
+          create: (args: {
+            data: {
+              sessionId: number;
+              action: string;
+              changedFields: unknown;
+              beforeData: unknown;
+              afterData: unknown;
+            };
+          }) => Promise<unknown>;
+        }
+      ).create({
+        data: {
+          sessionId: session.id,
+          action: "session_cancelled",
+          changedFields,
+          beforeData,
+          afterData,
+        },
+      });
+    }
+
+    return updatedSession;
   },
 
   async overrideSession(
     prisma: unknown,
     input: {
       sessionId: number;
+      overridePlayerName?: string;
       overrideStartTime?: Date;
       overrideEndTime?: Date;
       overrideRatePerMin?: number;
       overridePayerMode?: "none" | "single" | "split";
       overridePayerData?: unknown;
       overrideStatus?: "running" | "completed" | "billed" | "default";
+      overrideOutcome?: "NORMAL" | "LTP_LOSS";
       overridePaymentModes?: Array<"cash" | "upi" | "card" | "due"> | null;
       adminOverride?: boolean;
       changedBy?: string;
     },
   ) {
+    await ensureLedgerResetHydrated(prisma);
     const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
       (prisma as { session?: unknown; sessions?: unknown }).sessions;
     const tableModel = (prisma as { table?: unknown; tables?: unknown }).table ??
@@ -545,7 +746,9 @@ export const sessionService = {
     })) as {
       id: number;
       tableId: number;
+      playerName: string;
       status: "running" | "completed" | "billed";
+      outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
       startTime: Date;
       endTime: Date | null;
       payerMode: "none" | "single" | "split";
@@ -559,11 +762,15 @@ export const sessionService = {
       overridePaymentModes?: unknown;
       billId: number | null;
       amount?: number | null;
+      cancellationReason?: string | null;
       businessDayKey?: string | null;
     } | null;
 
     if (!session) {
       throw new Error("Session not found");
+    }
+    if (session.outcome === "CANCELLED" || session.cancellationReason) {
+      throw new Error("Cancelled session cannot be overridden");
     }
 
     const table = (await (
@@ -576,7 +783,13 @@ export const sessionService = {
       throw new Error("Table not found");
     }
 
-    const existingPayments = session.billId
+    const overridePlayerName = input.overridePlayerName?.trim();
+    if (input.overridePlayerName !== undefined && !overridePlayerName) {
+      throw new Error("Invalid player name");
+    }
+
+    const billId = session.billId;
+    const existingPayments = billId
       ? await (
         paymentModel as {
           findMany: (args: {
@@ -593,11 +806,11 @@ export const sessionService = {
           }>>;
         }
       ).findMany({
-        where: { billId: session.billId },
+        where: { billId },
       })
       : [];
     const existingPaidAmount = existingPayments.reduce((sum, payment) => sum + payment.amount, 0);
-    const lifecycleBillTotal = session.billId &&
+    const lifecycleBillTotal = billId &&
       (billModel as { findUnique?: unknown }).findUnique &&
       (sessionModel as { findMany?: unknown }).findMany
       ? await (async () => {
@@ -614,7 +827,7 @@ export const sessionService = {
             } | null>;
           }
         ).findUnique({
-          where: { id: session.billId },
+          where: { id: billId },
           select: { id: true, totalAmount: true, discountedAmount: true, discountType: true },
         });
         if (!bill) {
@@ -628,7 +841,7 @@ export const sessionService = {
             }) => Promise<Array<{ amount: number | null }>>;
           }
         ).findMany({
-          where: { billId: session.billId },
+          where: { billId },
           select: { amount: true },
         });
         const sessionsAmount = roundMoney(billSessions.reduce(
@@ -678,26 +891,28 @@ export const sessionService = {
         billedAmount: lifecycleBillTotal,
       });
     const hasOverrideStart = input.overrideStartTime !== undefined;
+    const hasOverridePlayerName = overridePlayerName !== undefined;
     const hasOverrideEnd = input.overrideEndTime !== undefined;
     const hasOverrideRate = input.overrideRatePerMin !== undefined;
     const hasOverridePayer = input.overridePayerMode !== undefined || input.overridePayerData !== undefined;
     const hasOverrideStatus = input.overrideStatus !== undefined && input.overrideStatus !== "default";
+    const hasOverrideOutcome = input.overrideOutcome !== undefined;
     const hasOverridePaymentModes = input.overridePaymentModes !== undefined;
 
     if (currentLifecycleState === "Running") {
-      if (hasOverrideEnd || hasOverrideStatus || hasOverridePaymentModes) {
-        throw new Error("Running overrides allow only start time, rate, or payer details");
+      if (hasOverrideEnd || hasOverrideStatus || hasOverrideOutcome || hasOverridePaymentModes) {
+        throw new Error("Running overrides allow player name, start time, rate, or payer details");
       }
-      if (!hasOverrideStart && !hasOverrideRate && !hasOverridePayer) {
+      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideRate && !hasOverridePayer) {
         throw new Error("No allowed override fields for running session");
       }
     }
 
     if (currentLifecycleState === "Completed") {
       if (hasOverrideStatus || hasOverridePaymentModes) {
-        throw new Error("Completed overrides allow start time, end time, rate, or payer details");
+        throw new Error("Completed overrides allow player name, start time, end time, rate, or payer details");
       }
-      if (!hasOverrideStart && !hasOverrideEnd && !hasOverrideRate && !hasOverridePayer) {
+      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideEnd && !hasOverrideRate && !hasOverridePayer && !hasOverrideOutcome) {
         throw new Error("No allowed override fields for completed session");
       }
     }
@@ -705,10 +920,12 @@ export const sessionService = {
     if (currentLifecycleState === "Billed") {
       if (
         input.overrideStatus !== "completed" ||
+        hasOverridePlayerName ||
         hasOverrideStart ||
         hasOverrideEnd ||
         hasOverrideRate ||
         hasOverridePayer ||
+        hasOverrideOutcome ||
         hasOverridePaymentModes
       ) {
         throw new Error("Billed session can only be moved back to unbilled");
@@ -718,10 +935,12 @@ export const sessionService = {
     if (currentLifecycleState === "Paid") {
       if (
         input.overrideStatus !== "billed" ||
+        hasOverridePlayerName ||
         hasOverrideStart ||
         hasOverrideEnd ||
         hasOverrideRate ||
         hasOverridePayer ||
+        hasOverrideOutcome ||
         hasOverridePaymentModes
       ) {
         throw new Error("Paid session can only be moved back to billed");
@@ -786,12 +1005,20 @@ export const sessionService = {
     }
 
     const durationMinutes = calculateDurationMinutes(effectiveStartTime, effectiveEndTime);
-    const amount = calculateAmount(
+    const calculatedAmount = calculateAmount(
       effectiveStartTime,
       effectiveEndTime,
       effectiveRatePerMin,
       table.name,
     );
+    const nextOutcome = input.overrideOutcome ?? session.outcome ?? "NORMAL";
+    if (nextOutcome === "LTP_LOSS" && isBilled({ billId: session.billId })) {
+      throw new Error("Billed session cannot be marked as LTP loss");
+    }
+    if (input.overrideStatus === "billed" && nextOutcome !== "NORMAL") {
+      throw new Error("LTP loss session cannot be billed");
+    }
+    const amount = nextOutcome === "LTP_LOSS" ? 0 : calculatedAmount;
 
     const shouldCancelOldBill = Boolean(
       currentLifecycleState === "Billed" &&
@@ -832,7 +1059,10 @@ export const sessionService = {
     }
 
     const beforeAuditSnapshot = buildOverrideAuditSnapshot({
+      playerName: session.playerName,
       status: session.status,
+      outcome: session.outcome ?? "NORMAL",
+      cancellationReason: session.cancellationReason ?? null,
       billId: session.billId,
       amount: session.amount ?? 0,
       overrideStartTime: session.overrideStartTime ?? null,
@@ -870,11 +1100,14 @@ export const sessionService = {
           where: { id: number };
           data: {
             overrideStartTime?: Date;
+            playerName?: string;
             overrideEndTime?: Date | null;
             overrideRatePerMin?: number;
             overridePayerMode?: string;
             overridePayerData?: unknown;
             overrideStatus?: string | null;
+            outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
+            cancellationReason?: string | null;
             overridePaymentModes?: unknown;
             billId?: number | null;
             businessDayKey?: string;
@@ -886,6 +1119,7 @@ export const sessionService = {
       where: { id: session.id },
       data: {
         ...(input.overrideStartTime ? { overrideStartTime: input.overrideStartTime } : {}),
+        ...(overridePlayerName !== undefined ? { playerName: overridePlayerName } : {}),
         ...(input.overrideEndTime ? { overrideEndTime: input.overrideEndTime } : {}),
         ...(typeof input.overrideRatePerMin === "number"
           ? { overrideRatePerMin: input.overrideRatePerMin }
@@ -899,6 +1133,7 @@ export const sessionService = {
         ...(input.overrideStatus !== undefined
           ? { overrideStatus: input.overrideStatus === "default" ? null : input.overrideStatus }
           : {}),
+        ...(input.overrideOutcome !== undefined ? { outcome: input.overrideOutcome } : {}),
         ...(input.overridePaymentModes !== undefined
           ? { overridePaymentModes: input.overridePaymentModes }
           : {}),
@@ -915,7 +1150,10 @@ export const sessionService = {
     });
 
     const updatedSessionRow = updatedSession as {
+      playerName?: string;
       status: "running" | "completed" | "billed";
+      outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
+      cancellationReason?: string | null;
       billId: number | null;
       amount: number | null;
       overrideStartTime?: Date | null;
@@ -1029,6 +1267,8 @@ export const sessionService = {
             status: true;
             billId: true;
             amount: true;
+            cancellationReason: true;
+            canceledAt: true;
           };
         }) => Promise<{
           id: number;
@@ -1037,6 +1277,8 @@ export const sessionService = {
           status?: "running" | "completed" | "billed";
           billId?: number | null;
           amount?: number | null;
+          cancellationReason?: string | null;
+          canceledAt?: Date | null;
         } | null>;
       }
     ).findUnique({
@@ -1048,6 +1290,8 @@ export const sessionService = {
         status: true,
         billId: true,
         amount: true,
+        cancellationReason: true,
+        canceledAt: true,
       },
     });
 
@@ -1184,6 +1428,21 @@ export const sessionService = {
       });
     }
 
+    if (session.canceledAt instanceof Date && session.cancellationReason) {
+      synthetic.push({
+        id: syntheticId--,
+        action: "session_cancelled",
+        actionLabel: toHistoryActionLabel("session_cancelled"),
+        changedBy: "System",
+        diffs: [
+          { field: "cancellationReason", before: null, after: session.cancellationReason },
+          { field: "canceledAt", before: null, after: session.canceledAt.toISOString() },
+          { field: "amount", before: session.amount ?? 0, after: 0 },
+        ],
+        createdAt: session.canceledAt,
+      });
+    }
+
     if (typeof session.billId === "number") {
       const billModel = (prisma as { bill?: unknown; bills?: unknown }).bill ??
         (prisma as { bill?: unknown; bills?: unknown }).bills;
@@ -1306,6 +1565,7 @@ export const sessionService = {
   },
 
   async getCompletedSessions(prisma: unknown) {
+    await ensureLedgerResetHydrated(prisma);
     const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
       (prisma as { session?: unknown; sessions?: unknown }).sessions;
 
@@ -1315,6 +1575,8 @@ export const sessionService = {
           where: {
             billId: null;
             status: { not: "running" };
+            outcome: "NORMAL";
+            cancellationReason: null;
           };
           orderBy: { endTime: "desc" };
           include: { table: { select: { name: true; ratePerMin: true } } };
@@ -1323,6 +1585,7 @@ export const sessionService = {
             id: number;
             playerName: string;
             status: "running" | "completed" | "billed";
+            outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
             billId: number | null;
             startTime: Date;
             endTime: Date | null;
@@ -1343,6 +1606,8 @@ export const sessionService = {
       where: {
         billId: null,
         status: { not: "running" },
+        outcome: "NORMAL",
+        cancellationReason: null,
       },
       orderBy: { endTime: "desc" },
       include: { table: { select: { name: true, ratePerMin: true } } },
@@ -1350,6 +1615,7 @@ export const sessionService = {
       id: number;
       playerName: string;
       status: "running" | "completed" | "billed";
+      outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
       billId: number | null;
       startTime: Date;
       endTime: Date | null;
@@ -1378,22 +1644,22 @@ export const sessionService = {
       const effectiveEndTime = getEffectiveEndTime(row);
       const effectiveRatePerMin = getEffectiveRatePerMin(row, row.table.ratePerMin);
       const durationMinutes = calculateDurationMinutes(effectiveStartTime, effectiveEndTime);
-      const amount = calculateAmount(
-        effectiveStartTime,
-        effectiveEndTime,
-        effectiveRatePerMin,
-        row.table.name,
-      );
+        const amount = calculateAmount(
+          effectiveStartTime,
+          effectiveEndTime,
+          effectiveRatePerMin,
+          row.table.name,
+        );
 
-      return {
-        id: row.id,
+        return {
+          id: row.id,
         tableName: row.table.name,
         playerName: row.playerName,
         durationMinutes,
-        amount,
-        payerMode: getEffectivePayerMode(row),
-        payerData: getEffectivePayerData(row),
-      };
+          amount: row.outcome === "LTP_LOSS" || row.outcome === "CANCELLED" ? 0 : amount,
+          payerMode: getEffectivePayerMode(row),
+          payerData: getEffectivePayerData(row),
+        };
     }).filter((row): row is {
       id: number;
       tableName: string;
@@ -1415,6 +1681,7 @@ export const sessionService = {
       endDate?: string;
     },
   ) {
+    await ensureLedgerResetHydrated(prisma);
     const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
       (prisma as { session?: unknown; sessions?: unknown }).sessions;
     const billModel = (prisma as { bill?: unknown; bills?: unknown }).bill ??
@@ -1439,8 +1706,11 @@ export const sessionService = {
             endTime: Date | null;
             businessDayKey?: string | null;
             status: "running" | "completed" | "billed";
+            outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
             billId: number | null;
             amount: number | null;
+            cancellationReason?: string | null;
+            canceledAt?: Date | null;
             payerMode: "none" | "single" | "split";
             payerData: unknown;
             overrideStartTime?: Date | null;
@@ -1466,8 +1736,11 @@ export const sessionService = {
       endTime: Date | null;
       businessDayKey?: string | null;
       status: "running" | "completed" | "billed";
+      outcome?: "NORMAL" | "LTP_LOSS" | "CANCELLED";
       billId: number | null;
       amount: number | null;
+      cancellationReason?: string | null;
+      canceledAt?: Date | null;
       payerMode: "none" | "single" | "split";
       payerData: unknown;
       overrideStartTime?: Date | null;
@@ -1565,20 +1838,25 @@ export const sessionService = {
       const effectiveEndTime = getEffectiveEndTime(row);
       const effectiveRatePerMin = getEffectiveRatePerMin(row, row.table.ratePerMin);
       const durationMinutes = calculateDurationMinutes(effectiveStartTime, effectiveEndTime);
-      const amount = calculateAmount(
+      const calculatedAmount = calculateAmount(
         effectiveStartTime,
         effectiveEndTime,
         effectiveRatePerMin,
         row.table.name,
       );
+      const outcome = normalizeSessionOutcome(row.outcome);
+      const isNonChargeOutcome = outcome === "LTP_LOSS" || outcome === "CANCELLED";
+      const amount = isNonChargeOutcome ? 0 : calculatedAmount;
 
       return {
         ...row,
+        outcome,
         effectiveStartTime,
         effectiveEndTime,
         effectiveRatePerMin,
         durationMinutes,
         amount,
+        ltpValue: outcome === "LTP_LOSS" ? calculatedAmount : 0,
       };
     });
 
@@ -1648,17 +1926,25 @@ export const sessionService = {
 
     const sortedRows = calculatedRows
       .map((row) => {
+        const outcome = normalizeSessionOutcome(row.outcome);
+        const isNonChargeOutcome = outcome === "LTP_LOSS" || outcome === "CANCELLED";
         const billed = isBilled({ billId: row.billId });
         const billPayments = billed ? paymentsByBillId.get(row.billId as number) ?? [] : [];
-        const paymentSplit = derivePaymentSplit(billPayments);
+        const paymentSplit = isNonChargeOutcome ? [] : derivePaymentSplit(billPayments);
         const defaultPaymentModes = paymentSplit.map((entry) => entry.mode);
         const overridePaymentModes = normalizeOverridePaymentModes(row.overridePaymentModes);
         const paymentModes = overridePaymentModes ?? defaultPaymentModes;
-        const sessionDiscount = billed ? discountBySessionId.get(row.id) ?? 0 : 0;
-        const finalAmount = billed
+        const sessionDiscount = isNonChargeOutcome
+          ? 0
+          : billed
+            ? discountBySessionId.get(row.id) ?? 0
+            : 0;
+        const finalAmount = isNonChargeOutcome
+          ? 0
+          : billed
           ? finalAmountBySessionId.get(row.id) ?? row.amount
           : row.amount;
-        const collectedAmount = billed ? collectedBySessionId.get(row.id) ?? 0 : 0;
+        const collectedAmount = isNonChargeOutcome ? 0 : billed ? collectedBySessionId.get(row.id) ?? 0 : 0;
         const paidAmount = roundMoney(Math.min(collectedAmount + sessionDiscount, row.amount));
         const effectivePaid = roundMoney(Math.max(paidAmount - sessionDiscount, 0));
         const remainingAmount = roundMoney(Math.max(finalAmount - effectivePaid, 0));
@@ -1671,6 +1957,8 @@ export const sessionService = {
           billId: row.billId,
           paidAmount: effectivePaid,
           amount: finalAmount,
+          outcome,
+          cancellationReason: row.cancellationReason ?? null,
         });
 
         return {
@@ -1688,6 +1976,8 @@ export const sessionService = {
           originalRatePerMin: row.table.ratePerMin,
           ratePerMin: row.effectiveRatePerMin,
           amount: row.amount,
+          outcome,
+          ltpValue: row.ltpValue ?? 0,
           sessionDiscount,
           finalAmount,
           effectivePaid,
@@ -1696,6 +1986,8 @@ export const sessionService = {
           paymentModes,
           paymentSplit,
           state,
+          cancellationReason: row.cancellationReason ?? null,
+          canceledAt: row.canceledAt ?? null,
           originalPayerMode: row.payerMode,
           originalPayerData: row.payerData,
           payerMode: getEffectivePayerMode(row),
@@ -1727,7 +2019,7 @@ export const sessionService = {
 
     const now = input?.now ?? new Date();
     const scope = input?.scope ?? "current";
-    const currentBusinessDay = getBusinessDayRange(now);
+    const currentBusinessDay = getBusinessDayRangeWithReset(now, getLedgerResetMinutesCached());
     const currentBusinessDayKey = currentBusinessDay.key;
     const selectedDayKey = scope === "day" && input?.date
       ? normalizeDayKeyInput(input.date)
@@ -1768,31 +2060,42 @@ export const sessionService = {
 
     const allPayments = await (
       paymentModel as {
-        findMany: (args: {
-          select: {
-            amount: true;
-            mode: true;
-            createdAt: true;
-            dueSettledAt: true;
-            dueReceivedMode: true;
+      findMany: (args: {
+        select: {
+          amount: true;
+          mode: true;
+          createdAt: true;
+          dueSettledAt: true;
+          dueReceivedMode: true;
+          bill: {
+            select: {
+              createdAt: true;
+            };
           };
-        }) => Promise<Array<{
-          amount: number;
-          mode: "cash" | "upi" | "card" | "due";
-          createdAt?: Date;
-          dueSettledAt?: Date | null;
-          dueReceivedMode?: "cash" | "upi" | "card" | "due" | null;
-        }>>;
-      }
-    ).findMany({
-      select: {
-        amount: true,
-        mode: true,
-        createdAt: true,
-        dueSettledAt: true,
-        dueReceivedMode: true,
+        };
+      }) => Promise<Array<{
+        amount: number;
+        mode: "cash" | "upi" | "card" | "due";
+        createdAt?: Date;
+        dueSettledAt?: Date | null;
+        dueReceivedMode?: "cash" | "upi" | "card" | "due" | null;
+        bill?: { createdAt?: Date } | null;
+      }>>;
+    }
+  ).findMany({
+    select: {
+      amount: true,
+      mode: true,
+      createdAt: true,
+      dueSettledAt: true,
+      dueReceivedMode: true,
+      bill: {
+        select: {
+          createdAt: true,
+        },
       },
-    });
+    },
+  });
     const paymentTotals = {
       cash: 0,
       upi: 0,
@@ -1801,6 +2104,9 @@ export const sessionService = {
       dueReceivedCash: 0,
       dueReceivedUpi: 0,
       dueReceivedCard: 0,
+      oldDueReceivedCash: 0,
+      oldDueReceivedUpi: 0,
+      oldDueReceivedCard: 0,
     };
     for (const payment of allPayments) {
       if (payment.mode === "due") {
@@ -1829,15 +2135,27 @@ export const sessionService = {
         payment.dueSettledAt.getTime() >= reportStart.getTime() &&
         payment.dueSettledAt.getTime() < reportEnd.getTime()
       ) {
+        const isOldDueRecovery =
+          payment.bill?.createdAt instanceof Date &&
+          payment.bill.createdAt.getTime() < reportStart.getTime();
         if (payment.mode === "cash") {
           paymentTotals.cash += payment.amount;
           paymentTotals.dueReceivedCash += payment.amount;
+          if (isOldDueRecovery) {
+            paymentTotals.oldDueReceivedCash += payment.amount;
+          }
         } else if (payment.mode === "upi") {
           paymentTotals.upi += payment.amount;
           paymentTotals.dueReceivedUpi += payment.amount;
+          if (isOldDueRecovery) {
+            paymentTotals.oldDueReceivedUpi += payment.amount;
+          }
         } else if (payment.mode === "card") {
           paymentTotals.card += payment.amount;
           paymentTotals.dueReceivedCard += payment.amount;
+          if (isOldDueRecovery) {
+            paymentTotals.oldDueReceivedCard += payment.amount;
+          }
         }
       } else if (
         payment.createdAt instanceof Date &&
@@ -1854,15 +2172,45 @@ export const sessionService = {
       }
     }
 
-    const subtotal = roundMoney(scopedRows.reduce((sum, row) => sum + row.amount, 0));
-    const discount = roundMoney(scopedRows.reduce((sum, row) => sum + row.sessionDiscount, 0));
+    const activeRows = scopedRows.filter((row) => row.state !== "Cancelled" && row.state !== "LTP-Loss");
+    const ltpRows = scopedRows.filter((row) => row.outcome === "LTP_LOSS");
+    const cancelledRows = scopedRows.filter((row) => row.outcome === "CANCELLED");
+    const subtotal = roundMoney(activeRows.reduce((sum, row) => sum + row.amount, 0));
+    const discount = roundMoney(activeRows.reduce((sum, row) => sum + row.sessionDiscount, 0));
     const net = roundMoney(subtotal - discount);
     const dueReceived = roundMoney(
-      paymentTotals.dueReceivedCash + paymentTotals.dueReceivedUpi + paymentTotals.dueReceivedCard,
+      paymentTotals.oldDueReceivedCash + paymentTotals.oldDueReceivedUpi + paymentTotals.oldDueReceivedCard,
     );
-    const paid = roundMoney(paymentTotals.cash + paymentTotals.upi + paymentTotals.card);
-    const unpaid = roundMoney(scopedRows.reduce((sum, row) => sum + row.remainingAmount, 0));
-    const total = roundMoney(net + dueReceived);
+    const openingDueOutstandingCurrent = roundMoney(
+      allPayments
+        .filter(
+          (payment) =>
+            payment.mode === "due" &&
+            !payment.dueSettledAt &&
+            payment.amount > 0 &&
+            payment.createdAt instanceof Date &&
+            payment.createdAt.getTime() < reportStart.getTime(),
+        )
+        .reduce((sum, payment) => sum + payment.amount, 0),
+    );
+    const openingDueOutstanding = roundMoney(openingDueOutstandingCurrent + dueReceived);
+    const dueOutstanding = roundMoney(
+      allPayments
+        .filter(
+          (payment) =>
+            payment.mode === "due" &&
+            !payment.dueSettledAt &&
+            payment.amount > 0 &&
+            payment.createdAt instanceof Date &&
+            payment.createdAt.getTime() < reportEnd.getTime(),
+        )
+        .reduce((sum, payment) => sum + payment.amount, 0),
+    );
+    const netReceivableChange = roundMoney(dueOutstanding - openingDueOutstanding);
+    const collectionTotal = roundMoney(paymentTotals.cash + paymentTotals.upi + paymentTotals.card);
+    const paid = roundMoney(activeRows.reduce((sum, row) => sum + row.effectivePaid, 0));
+    const unpaid = roundMoney(activeRows.reduce((sum, row) => sum + row.remainingAmount, 0));
+    const total = roundMoney(net);
     const isBalanced = Math.abs(total - roundMoney(paid + unpaid)) < 0.01;
 
     const summary = {
@@ -1877,10 +2225,17 @@ export const sessionService = {
       dueReceivedCash: roundMoney(paymentTotals.dueReceivedCash),
       dueReceivedUpi: roundMoney(paymentTotals.dueReceivedUpi),
       dueReceivedCard: roundMoney(paymentTotals.dueReceivedCard),
+      openingDueOutstanding,
+      dueOutstanding,
+      netReceivableChange,
+      collectionTotal,
       unpaid,
       total,
       paid,
       isBalanced,
+      ltpCount: ltpRows.length,
+      ltpValue: roundMoney(ltpRows.reduce((sum, row) => sum + (row.ltpValue ?? 0), 0)),
+      cancelledCount: cancelledRows.length,
     };
 
     const snapshotKey = scope === "day" ? selectedDayKey : currentBusinessDayKey;

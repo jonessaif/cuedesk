@@ -65,6 +65,9 @@ describe("Billing module", () => {
       bills: {
         findUnique: vi.fn().mockResolvedValue({ id: 1, totalAmount: 500 }),
       },
+      sessions: {
+        findMany: vi.fn().mockResolvedValue([{ outcome: "NORMAL" }]),
+      },
       payments: {
         findMany: vi.fn().mockResolvedValue([{ amount: 450 }]),
       },
@@ -77,5 +80,27 @@ describe("Billing module", () => {
         discountValue: 100,
       }),
     ).rejects.toThrow("Discount exceeds remaining amount");
+  });
+
+  it("should reject discount when bill has LTP sessions", async () => {
+    const prisma = {
+      bills: {
+        findUnique: vi.fn().mockResolvedValue({ id: 1, totalAmount: 500 }),
+      },
+      sessions: {
+        findMany: vi.fn().mockResolvedValue([{ outcome: "LTP_LOSS" }]),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    await expect(
+      billingService.applyDiscount(prisma as never, {
+        billId: 1,
+        discountType: "fixed",
+        discountValue: 10,
+      }),
+    ).rejects.toThrow("Cannot apply discount to non-billable sessions");
   });
 });

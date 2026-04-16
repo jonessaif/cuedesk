@@ -4,6 +4,32 @@ Base URL (dev): `http://localhost:3000`
 
 All routes are local Next.js handlers under `src/app/api`.
 
+## Authentication and Authorization
+
+### POST `/api/auth/login`
+Authenticate with PIN.
+
+Body:
+```json
+{
+  "pin": "9345"
+}
+```
+
+Notes:
+- PIN must be 4 digits.
+- Server validates PIN against stored bcrypt hash.
+
+### Auth header for all other APIs
+All APIs except `/api/auth/login` require:
+```http
+x-user-id: <user-id>
+```
+
+Role model:
+- `operator`: session, billing, payment, reports
+- `admin`: full access, including management APIs
+
 ## Tables
 
 ### GET `/api/tables`
@@ -48,6 +74,9 @@ Body:
 ```
 
 `endTime` is optional.
+
+### POST `/api/session/cancel`
+Cancel a running/completed session with required reason.
 
 ### POST `/api/session/assign-payer`
 Assign payer to running session.
@@ -201,11 +230,33 @@ Realtime customer suggestions by phone/name.
 
 ## Reports
 
+### GET `/api/reports/daily`
+Requires operator/admin auth.
+
 ### GET `/api/reports/daily?key=YYYY-MM-DD`
 Returns one persisted daily report snapshot by business-day key.
 
 ### GET `/api/reports/daily?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
 Returns snapshot list in key range.
+
+## Management APIs (Admin)
+
+### Users
+- `GET /api/users`
+- `POST /api/users`
+- `PATCH /api/users/:id`
+- `DELETE /api/users/:id`
+- `GET /api/users/options`
+
+### Table sections
+- `GET /api/table-sections`
+- `POST /api/table-sections`
+- `PATCH /api/table-sections/:id`
+- `DELETE /api/table-sections/:id`
+
+### Settings
+- `GET /api/settings/ledger-reset`
+- `PATCH /api/settings/ledger-reset`
 
 ## Errors
 
@@ -216,4 +267,7 @@ Most validation/business failures return:
 }
 ```
 
-Typical status: `400`.
+Typical status codes:
+- `400` validation/business rule failure
+- `401` unauthorized (missing/invalid auth)
+- `403` forbidden (insufficient role)

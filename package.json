@@ -8,12 +8,21 @@
     "start": "next start -H 0.0.0.0",
     "test": "vitest run",
     "test:watch": "vitest",
+    "seed:reset-demo": "node scripts/reset-and-seed-demo.cjs",
     "backfill:bills": "tsx scripts/backfill-session-bill-links.ts",
     "backfill:ledger-demo": "tsx scripts/backfill-ledger-preview-data.ts",
-    "backfill:business-day-keys": "tsx scripts/backfill-business-day-keys.ts"
+    "backfill:business-day-keys": "tsx scripts/backfill-business-day-keys.ts",
+    "android:add": "npx cap add android",
+    "android:sync": "npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:build:debug": "cd android && ./gradlew assembleDebug"
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.0",
+    "@capacitor/cli": "^8.3.0",
+    "@capacitor/core": "^8.3.0",
     "@prisma/client": "^6.7.0",
+    "bcryptjs": "^2.4.3",
     "next": "^16.0.0",
     "react": "19.0.0",
     "react-dom": "19.0.0"

@@ -1,8 +1,10 @@
+import { requireOperatorOrAdmin } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getCollectedPaidAmount, getEffectiveBillTotals } from "@/lib/billTotals";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    await requireOperatorOrAdmin(prisma, request);
     const bills = await prisma.bill.findMany({
       orderBy: { id: "desc" },
       include: {
@@ -73,6 +75,7 @@ export async function GET() {
     return Response.json({ data }, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    return Response.json({ error: message }, { status: 400 });
+    const status = message.startsWith("Unauthorized") ? 401 : message.startsWith("Forbidden") ? 403 : 400;
+    return Response.json({ error: message }, { status });
   }
 }

@@ -5,6 +5,7 @@ CueDesk tracks three related but distinct notions:
 - **stored session status**: DB `status` (`running`, `completed`, `billed`)
 - **effective session status**: `overrideStatus ?? status`
 - **derived ledger/table states**: computed views for UI
+- **session outcome**: `NORMAL`, `LTP_LOSS`, `CANCELLED`
 
 ## 2. Effective Status
 Single source formula:
