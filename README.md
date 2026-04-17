@@ -40,6 +40,9 @@ It is built with Next.js + Prisma + SQLite and keeps backend logic as the single
   - due-received visibility (included in collection modes)
   - grouped by bill context
   - daily snapshot storage (`DailyReport`)
+  - analytics: table idle time, table-wise revenue/runtime, and hour-wise best/slow periods
+  - revenue trend chart: day-wise for multi-day ranges, hour-wise for single day
+  - hourly chart includes a combined `08-11` bucket (cafe closed window)
 - Auth and security:
   - PIN-based login (`4` digits)
   - mobile numeric keypad with auto-submit at 4 digits
@@ -161,7 +164,7 @@ npm run start
 - Numeric keypad is provided for fast PIN entry.
 - Login auto-submits when PIN length reaches 4.
 - Active user is shown in header.
-- `Logout` and `Switch User` are available in the header.
+- `Logout` is available in the header.
 - Auto logout happens after 2 hours of inactivity.
 - PIN validation is done on backend and stored as bcrypt hash (`bcryptjs`).
 

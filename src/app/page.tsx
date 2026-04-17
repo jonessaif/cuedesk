@@ -792,7 +792,6 @@ export default function HomePage() {
     authHeaders,
     loginWithPin,
     logout: logoutAuth,
-    switchUser,
   } = useAuth();
   const [isDark, setIsDark] = useState(false);
   const [themeReady, setThemeReady] = useState(false);
@@ -1180,12 +1179,6 @@ export default function HomePage() {
     logoutAuth("manual");
     setShowManagement(false);
     pushToast("info", "Logged out");
-  }
-
-  function handleSwitchUser() {
-    switchUser();
-    setShowManagement(false);
-    pushToast("info", "Switched user");
   }
 
   function ensureAdminAction(): boolean {
@@ -2853,15 +2846,6 @@ export default function HomePage() {
                 className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
               >
                 Logout
-              </button>
-            ) : null}
-            {activeUser ? (
-              <button
-                type="button"
-                onClick={handleSwitchUser}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-              >
-                Switch User
               </button>
             ) : null}
             {canManage ? (

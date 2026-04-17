@@ -29,7 +29,6 @@ type AuthContextValue = {
   authHeaders: () => HeadersInit;
   loginWithPin: (pin: string) => Promise<LoginResult>;
   logout: (reason?: "manual" | "timeout") => void;
-  switchUser: () => void;
   touchActivity: () => void;
 };
 
@@ -137,10 +136,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  function switchUser() {
-    logout("manual");
-  }
-
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -204,7 +199,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authHeaders,
       loginWithPin,
       logout,
-      switchUser,
       touchActivity,
     }),
     [activeUser, authReady, loginBusy],

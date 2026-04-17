@@ -75,9 +75,80 @@ type LedgerSessionRow = {
   overridePaymentModes: PaymentMode[] | null;
 };
 
+type TableAnalyticsRow = {
+  tableId: number;
+  tableName: string;
+  runningMinutes: number;
+  idleMinutes: number;
+  utilizationPct: number;
+  revenue: number;
+  sessionCount: number;
+};
+
+type HourlyAnalyticsRow = {
+  hour: number;
+  label: string;
+  runningMinutes: number;
+  idleMinutes: number;
+  capacityMinutes: number;
+  utilizationPct: number;
+  revenue: number;
+  sessionCount: number;
+};
+
+type AnalyticsData = {
+  window: {
+    scope: string;
+    key: string | null;
+    startDate: string | null;
+    endDate: string | null;
+    start: string;
+    end: string;
+    totalMinutes: number;
+    tableCount: number;
+    reportDays: number;
+  };
+  overall: {
+    totalRunningMinutes: number;
+    totalIdleMinutes: number;
+    totalCapacityMinutes: number;
+    utilizationPct: number;
+    revenue: number;
+    dailyAverageRevenue: number;
+  };
+  tables: TableAnalyticsRow[];
+  hourly: HourlyAnalyticsRow[];
+  highlights: {
+    bestRevenueHour: HourlyAnalyticsRow | null;
+    slowestRevenueHour: HourlyAnalyticsRow | null;
+    bestUtilizationHour: HourlyAnalyticsRow | null;
+    slowestUtilizationHour: HourlyAnalyticsRow | null;
+  };
+  revenueSeries: {
+    mode: "day" | "hour";
+    points: Array<{
+      label: string;
+      revenue: number;
+    }>;
+  };
+};
+
 function formatMoney(value: number | null | undefined): string {
   const safe = typeof value === "number" ? value : 0;
   return String(Math.round(safe));
+}
+
+function formatDurationMinutes(totalMinutes: number | null | undefined): string {
+  const safe = Math.max(Math.round(typeof totalMinutes === "number" ? totalMinutes : 0), 0);
+  const hours = Math.floor(safe / 60);
+  const minutes = safe % 60;
+  if (hours <= 0) {
+    return `${minutes}m`;
+  }
+  if (minutes === 0) {
+    return `${hours}h`;
+  }
+  return `${hours}h ${minutes}m`;
 }
 
 function formatSignedMoney(value: number | null | undefined): string {
@@ -229,6 +300,7 @@ export default function ReportsPage() {
     start: null,
     end: null,
   });
+  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [error, setError] = useState<string>("");
   const [splitViewSession, setSplitViewSession] = useState<LedgerSessionRow | null>(null);
 
@@ -261,25 +333,42 @@ export default function ReportsPage() {
         params.set("startDate", ledgerStartDate);
         params.set("endDate", ledgerEndDate);
       }
-      const res = await fetch(`/api/sessions/all?${params.toString()}`, {
-        cache: "no-store",
-        headers: authHeaders(),
-      });
-      const data = await readJsonSafe<{ data?: LedgerSessionRow[]; summary?: LedgerSummary; window?: LedgerWindow; error?: string }>(res);
-      if (!res.ok) {
-        throw new Error(data?.error ?? "Failed to fetch reports");
+      const query = params.toString();
+
+      const [ledgerRes, analyticsRes] = await Promise.all([
+        fetch(`/api/sessions/all?${query}`, {
+          cache: "no-store",
+          headers: authHeaders(),
+        }),
+        fetch(`/api/reports/analytics?${query}`, {
+          cache: "no-store",
+          headers: authHeaders(),
+        }),
+      ]);
+
+      const ledgerData = await readJsonSafe<{ data?: LedgerSessionRow[]; summary?: LedgerSummary; window?: LedgerWindow; error?: string }>(ledgerRes);
+      if (!ledgerRes.ok) {
+        throw new Error(ledgerData?.error ?? "Failed to fetch reports");
       }
-      setRows(data?.data ?? []);
-      if (data?.summary) {
-        setSummary(data.summary);
+
+      const analyticsData = await readJsonSafe<{ data?: AnalyticsData; error?: string }>(analyticsRes);
+      if (!analyticsRes.ok) {
+        throw new Error(analyticsData?.error ?? "Failed to fetch analytics");
       }
-      if (data?.window) {
-        setWindowInfo(data.window);
+
+      setRows(ledgerData?.data ?? []);
+      if (ledgerData?.summary) {
+        setSummary(ledgerData.summary);
       }
+      if (ledgerData?.window) {
+        setWindowInfo(ledgerData.window);
+      }
+      setAnalytics(analyticsData?.data ?? null);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to fetch reports";
       setError(message);
       setRows([]);
+      setAnalytics(null);
     }
   }
 
@@ -355,6 +444,36 @@ export default function ReportsPage() {
       : summary.netReceivableChange < 0
         ? "text-emerald-700"
         : "text-slate-800";
+  const analyticsTopTable = analytics?.tables?.[0] ?? null;
+  const analyticsWindow = analytics?.window ?? {
+    scope: "day",
+    key: null,
+    startDate: null,
+    endDate: null,
+    start: null,
+    end: null,
+    totalMinutes: 0,
+    tableCount: 0,
+    reportDays: 1,
+  };
+  const analyticsOverall = analytics?.overall ?? {
+    totalRunningMinutes: 0,
+    totalIdleMinutes: 0,
+    totalCapacityMinutes: 0,
+    utilizationPct: 0,
+    revenue: 0,
+    dailyAverageRevenue: 0,
+  };
+  const analyticsHighlights = analytics?.highlights ?? {
+    bestRevenueHour: null,
+    slowestRevenueHour: null,
+    bestUtilizationHour: null,
+    slowestUtilizationHour: null,
+  };
+  const analyticsRevenueSeries = analytics?.revenueSeries ?? {
+    mode: "hour" as const,
+    points: [] as Array<{ label: string; revenue: number }>,
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -588,6 +707,165 @@ export default function ReportsPage() {
               </div>
             </div>
           </div>
+
+          <section className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-800">Table Analytics</p>
+              {analytics?.window ? (
+                <p className="text-[11px] text-slate-600">
+                  {formatDateTimeFull(analyticsWindow.start)} to {formatDateTimeFull(analyticsWindow.end)}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="rounded-md border border-slate-200 bg-white p-2">
+                <p className="text-[11px] text-slate-500">Total Running Time</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">
+                  {formatDurationMinutes(analyticsOverall.totalRunningMinutes)}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-white p-2">
+                <p className="text-[11px] text-slate-500">Total Idle Time</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">
+                  {formatDurationMinutes(analyticsOverall.totalIdleMinutes)}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-white p-2">
+                <p className="text-[11px] text-slate-500">Overall Utilization</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">
+                  {`${analyticsOverall.utilizationPct}%`}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-white p-2">
+                <p className="text-[11px] text-slate-500">Table Revenue (Gross)</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">₹{formatMoney(analyticsOverall.revenue)}</p>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-white p-2">
+                <p className="text-[11px] text-slate-500">Daily Avg Revenue</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">₹{formatMoney(analyticsOverall.dailyAverageRevenue)}</p>
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  Based on {analyticsWindow.reportDays} day(s)
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-2 rounded-md border border-slate-200 bg-white p-2">
+              <p className="text-[11px] font-semibold text-slate-800">
+                Revenue Trend ({analyticsRevenueSeries.mode === "day" ? "Day-wise" : "Hour-wise"})
+              </p>
+              {analyticsRevenueSeries.mode === "hour" ? (
+                <p className="mt-0.5 text-[10px] text-slate-500">Note: 08-11 is combined (cafe closed).</p>
+              ) : null}
+              <div className="mt-2 overflow-x-auto">
+                <div className="flex min-h-[160px] min-w-max items-end gap-2">
+                  {(() => {
+                    const points = analyticsRevenueSeries.points;
+                    const maxRevenue = Math.max(...points.map((point) => point.revenue), 1);
+                    return points.map((point) => {
+                      const barHeight = Math.max(Math.round((point.revenue / maxRevenue) * 110), 6);
+                      return (
+                        <div key={`${point.label}-${point.revenue}`} className="flex w-11 flex-col items-center">
+                          <p className="mb-1 text-[10px] font-medium text-slate-700">₹{formatMoney(point.revenue)}</p>
+                          <div
+                            className="w-8 rounded-t bg-indigo-500"
+                            style={{ height: `${barHeight}px` }}
+                            title={`${point.label}: ₹${formatMoney(point.revenue)}`}
+                          />
+                          <p className="mt-1 text-[10px] text-slate-600">{point.label}</p>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2">
+                <p className="text-[11px] font-semibold text-emerald-900">Best Hours</p>
+                <p className="mt-1 text-[11px] text-emerald-900">
+                  Revenue: {analyticsHighlights.bestRevenueHour?.label ?? "-"} (₹{formatMoney(analyticsHighlights.bestRevenueHour?.revenue)})
+                </p>
+                <p className="text-[11px] text-emerald-900">
+                  Utilization: {analyticsHighlights.bestUtilizationHour?.label ?? "-"} ({analyticsHighlights.bestUtilizationHour?.utilizationPct ?? 0}%)
+                </p>
+              </div>
+              <div className="rounded-md border border-rose-200 bg-rose-50 p-2">
+                <p className="text-[11px] font-semibold text-rose-900">Slowest Hours</p>
+                <p className="mt-1 text-[11px] text-rose-900">
+                  Revenue: {analyticsHighlights.slowestRevenueHour?.label ?? "-"} (₹{formatMoney(analyticsHighlights.slowestRevenueHour?.revenue)})
+                </p>
+                <p className="text-[11px] text-rose-900">
+                  Utilization: {analyticsHighlights.slowestUtilizationHour?.label ?? "-"} ({analyticsHighlights.slowestUtilizationHour?.utilizationPct ?? 0}%)
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-2 grid gap-2 lg:grid-cols-2">
+              <div className="max-h-56 overflow-auto rounded-md border border-slate-200 bg-white">
+                <table className="min-w-full text-left text-[11px]">
+                  <thead className="sticky top-0 bg-slate-100 text-slate-700">
+                    <tr>
+                      <th className="px-2 py-1.5">Table</th>
+                      <th className="px-2 py-1.5">Run</th>
+                      <th className="px-2 py-1.5">Idle</th>
+                      <th className="px-2 py-1.5">Util</th>
+                      <th className="px-2 py-1.5">Revenue</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(analytics?.tables ?? []).map((table) => (
+                      <tr key={table.tableId} className="border-t border-slate-100">
+                        <td className="px-2 py-1.5 font-medium text-slate-900">{table.tableName}</td>
+                        <td className="px-2 py-1.5 text-slate-700">{formatDurationMinutes(table.runningMinutes)}</td>
+                        <td className="px-2 py-1.5 text-slate-700">{formatDurationMinutes(table.idleMinutes)}</td>
+                        <td className="px-2 py-1.5 text-slate-700">{table.utilizationPct}%</td>
+                        <td className="px-2 py-1.5 text-slate-700">₹{formatMoney(table.revenue)}</td>
+                      </tr>
+                    ))}
+                    {(analytics?.tables ?? []).length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="px-2 py-2 text-slate-500">No table analytics in this timeframe</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="max-h-56 overflow-auto rounded-md border border-slate-200 bg-white">
+                <table className="min-w-full text-left text-[11px]">
+                  <thead className="sticky top-0 bg-slate-100 text-slate-700">
+                    <tr>
+                      <th className="px-2 py-1.5">Hour</th>
+                      <th className="px-2 py-1.5">Run</th>
+                      <th className="px-2 py-1.5">Util</th>
+                      <th className="px-2 py-1.5">Revenue</th>
+                      <th className="px-2 py-1.5">Sessions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(analytics?.hourly ?? []).map((hour) => (
+                      <tr key={hour.hour} className="border-t border-slate-100">
+                        <td className="px-2 py-1.5 font-medium text-slate-900">{hour.label}</td>
+                        <td className="px-2 py-1.5 text-slate-700">{formatDurationMinutes(hour.runningMinutes)}</td>
+                        <td className="px-2 py-1.5 text-slate-700">{hour.utilizationPct}%</td>
+                        <td className="px-2 py-1.5 text-slate-700">₹{formatMoney(hour.revenue)}</td>
+                        <td className="px-2 py-1.5 text-slate-700">{hour.sessionCount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {analyticsTopTable ? (
+              <p className="mt-2 text-[11px] text-slate-600">
+                Top table for selected window: <span className="font-semibold text-slate-800">{analyticsTopTable.tableName}</span>
+                {" "}with ₹{formatMoney(analyticsTopTable.revenue)} revenue and {analyticsTopTable.utilizationPct}% utilization.
+              </p>
+            ) : null}
+          </section>
 
           <div className="mt-3 max-h-[520px] overflow-auto">
             <table className="min-w-full text-left text-xs">

@@ -239,6 +239,22 @@ Returns one persisted daily report snapshot by business-day key.
 ### GET `/api/reports/daily?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
 Returns snapshot list in key range.
 
+### GET `/api/reports/analytics?scope=current|day|range&date=YYYY-MM-DD&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
+Returns analytics for selected timeframe:
+- table idle/running time
+- table-wise revenue and utilization
+- hour-wise running/revenue/session distribution
+- best/slowest hours by revenue and utilization
+- daily average revenue (`dailyAverageRevenue`)
+- revenue chart series (`revenueSeries`):
+  - `mode: "day"` when selected period has multiple days
+  - `mode: "hour"` when selected period is a single day
+  - in `hour` mode, `08-11` is returned as one combined bucket
+
+Optional custom timeframe:
+- `startAt=<ISO datetime>`
+- `endAt=<ISO datetime>`
+
 ## Management APIs (Admin)
 
 ### Users
