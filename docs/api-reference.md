@@ -239,7 +239,7 @@ Returns one persisted daily report snapshot by business-day key.
 ### GET `/api/reports/daily?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
 Returns snapshot list in key range.
 
-### GET `/api/reports/analytics?scope=current|day|range&date=YYYY-MM-DD&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
+### GET `/api/reports/analytics?scope=current|day|range&date=YYYY-MM-DD&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&tableId=<id>`
 Returns analytics for selected timeframe:
 - table idle/running time
 - table-wise revenue and utilization
@@ -249,11 +249,111 @@ Returns analytics for selected timeframe:
 - revenue chart series (`revenueSeries`):
   - `mode: "day"` when selected period has multiple days
   - `mode: "hour"` when selected period is a single day
-  - in `hour` mode, `08-11` is returned as one combined bucket
+  - in `hour` mode, merged buckets are configurable (default includes `08-11`)
+- includes chart settings bundle in response:
+  - `settings.global`
+  - `settings.table` (when `tableId` is provided and override exists)
+  - `settings.effective` (resolved settings used by chart)
 
 Optional custom timeframe:
 - `startAt=<ISO datetime>`
 - `endAt=<ISO datetime>`
+
+### GET `/api/reports/settings?tableId=<id>`
+Returns report chart settings bundle.
+
+Auth:
+- `operator` or `admin`
+
+Response:
+```json
+{
+  "data": {
+    "global": {
+      "target": "global",
+      "tableId": null,
+      "chartMode": "auto",
+      "mergeBuckets": [{ "startHour": 8, "endHour": 11, "label": "08-11" }],
+      "includeClosed": true,
+      "updatedAt": null
+    },
+    "table": null,
+    "effective": {
+      "target": "global",
+      "tableId": null,
+      "chartMode": "auto",
+      "mergeBuckets": [{ "startHour": 8, "endHour": 11, "label": "08-11" }],
+      "includeClosed": true,
+      "updatedAt": null
+    }
+  }
+}
+```
+
+### PATCH `/api/reports/settings`
+Upsert report chart settings.
+
+Auth:
+- `admin` only
+
+Body:
+```json
+{
+  "target": "global",
+  "chartMode": "auto",
+  "mergeBuckets": [{ "startHour": 8, "endHour": 11, "label": "08-11" }],
+  "includeClosed": true
+}
+```
+
+Table-specific example:
+```json
+{
+  "target": "table",
+  "tableId": 3,
+  "chartMode": "hour",
+  "mergeBuckets": [{ "startHour": 8, "endHour": 11, "label": "08-11" }],
+  "includeClosed": false
+}
+```
+
+### GET `/api/reports/settings?tableId=<id>`
+Returns report chart settings bundle:
+- `global` settings
+- optional `table` override for given table
+- `effective` resolved settings
+
+Requires: operator/admin
+
+### PATCH `/api/reports/settings`
+Upsert report chart settings.
+
+Body:
+```json
+{
+  "target": "global",
+  "chartMode": "auto",
+  "includeClosed": true,
+  "mergeBuckets": [
+    { "startHour": 8, "endHour": 11, "label": "08-11" }
+  ]
+}
+```
+
+Table-specific body:
+```json
+{
+  "target": "table",
+  "tableId": 3,
+  "chartMode": "hour",
+  "includeClosed": false,
+  "mergeBuckets": [
+    { "startHour": 8, "endHour": 11, "label": "08-11" }
+  ]
+}
+```
+
+Requires: admin
 
 ## Management APIs (Admin)
 

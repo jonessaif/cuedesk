@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
+import { isNativeServerSetupAvailable, openNativeServerSetup } from "@/lib/native-server-setup";
 
 type TableRow = {
   id: number;
@@ -891,7 +892,6 @@ export default function HomePage() {
   const [dueReportByBill, setDueReportByBill] = useState<DueByBillRow[]>([]);
   const [dueViewMode, setDueViewMode] = useState<"customer" | "bill">("customer");
   const [showBillsPanel, setShowBillsPanel] = useState(false);
-  const [showReportsSidebar, setShowReportsSidebar] = useState(false);
   const [billSearchRows, setBillSearchRows] = useState<BillSearchRow[]>([]);
   const [billSearchLoading, setBillSearchLoading] = useState(false);
   const [billSearchError, setBillSearchError] = useState<string | null>(null);
@@ -934,6 +934,7 @@ export default function HomePage() {
   const [overrideBusy, setOverrideBusy] = useState(false);
   const isAdminUser = activeUser?.role === "admin";
   const canManage = isAdminUser;
+  const showNativeServerButton = themeReady && isNativeServerSetupAvailable();
 
   function pushToast(kind: ToastMessage["kind"], text: string) {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -2713,10 +2714,12 @@ export default function HomePage() {
             </p>
 
             <input
+              type="password"
               value={loginPin}
               onChange={(e) => setLoginPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
               placeholder="Enter 4-digit PIN"
               inputMode="numeric"
+              autoComplete="off"
               maxLength={4}
               className="mt-5 w-full rounded-xl border border-slate-300 bg-white px-4 py-4 text-center text-2xl tracking-[0.5em] text-slate-900"
             />
@@ -2812,56 +2815,63 @@ export default function HomePage() {
         </div>
       ) : null}
       <div className="mx-auto max-w-7xl">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-2xl font-bold text-slate-900">CueDesk Dashboard</h1>
-          <div className="flex flex-wrap items-center gap-2">
-            {activeUser ? (
-              <p className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800">
-                {activeUser.name} ({activeUser.role})
-              </p>
-            ) : (
-              <>
-                <input
-                  value={loginPin}
-                  onChange={(e) => setLoginPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
-                  placeholder="PIN"
-                  inputMode="numeric"
-                  maxLength={4}
-                  className="w-24 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800"
-                />
-                <button
-                  type="button"
-                  disabled={loginBusy}
-                  onClick={() => void submitPinLogin()}
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-slate-900">CueDesk Dashboard</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {canManage ? (
+                <Link
+                  href="/management"
                   className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
                 >
-                  Login
-                </button>
-              </>
-            )}
+                  Management
+                </Link>
+              ) : null}
+              <Link
+                href="/reports"
+                className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+              >
+                Reports
+              </Link>
+              <Link
+                href="/due-report"
+                className="rounded-md bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900"
+              >
+                Due Report
+              </Link>
+              <Link
+                href="/bills"
+                className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+              >
+                Bills
+              </Link>
+            </div>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
             {activeUser ? (
+              <p className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800">
+                {activeUser.name} ({activeUser.role})
+              </p>
+            ) : null}
+            {showNativeServerButton ? (
               <button
                 type="button"
-                onClick={logout}
+                onClick={() => {
+                  if (!openNativeServerSetup()) {
+                    pushToast("info", "Server setup is available in the Android app");
+                  }
+                }}
                 className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
               >
-                Logout
+                Server
               </button>
-            ) : null}
-            {canManage ? (
-              <Link
-                href="/management"
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-              >
-                Management
-              </Link>
             ) : null}
             <button
               type="button"
-              onClick={() => setShowReportsSidebar((prev) => !prev)}
+              onClick={logout}
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
             >
-              {showReportsSidebar ? "Hide Reports" : "Reports"}
+              Logout
             </button>
             <button
               type="button"
@@ -3547,59 +3557,6 @@ export default function HomePage() {
           </aside>
         </div>
       </div>
-
-      {showReportsSidebar ? (
-        <button
-          type="button"
-          aria-label="Close reports sidebar"
-          onClick={() => setShowReportsSidebar(false)}
-          className="fixed inset-0 z-30 bg-black/30"
-        />
-      ) : null}
-      <aside
-        className={`fixed right-0 top-0 z-40 h-full w-[min(88vw,320px)] border-l border-slate-300 bg-white p-4 shadow-2xl transition-transform duration-300 ${
-          showReportsSidebar ? "translate-x-0" : "translate-x-full"
-        }`}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">Reports</h2>
-            <p className="mt-1 text-xs text-slate-600">
-              Open reports and analysis pages from here.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowReportsSidebar(false)}
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100"
-          >
-            Close
-          </button>
-        </div>
-        <div className="mt-4 grid gap-2">
-          <Link
-            href="/reports"
-            onClick={() => setShowReportsSidebar(false)}
-            className="rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-900"
-          >
-            Session Reports
-          </Link>
-          <Link
-            href="/due-report"
-            onClick={() => setShowReportsSidebar(false)}
-            className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-          >
-            Due Report
-          </Link>
-          <Link
-            href="/bills"
-            onClick={() => setShowReportsSidebar(false)}
-            className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-          >
-            Bills
-          </Link>
-        </div>
-      </aside>
 
       {historySession ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

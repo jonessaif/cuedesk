@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { isNativeServerSetupAvailable, openNativeServerSetup } from "@/lib/native-server-setup";
 
 type ActiveUser = {
   id: number;
@@ -51,6 +52,7 @@ export default function DueReportPage() {
   const [activeUserId, setActiveUserId] = useState<number | null>(null);
   const [dueViewMode, setDueViewMode] = useState<"customer" | "bill">("customer");
   const [customerFilter, setCustomerFilter] = useState("");
+  const showNativeServerButton = themeReady && isNativeServerSetupAvailable();
   const [dueReport, setDueReport] = useState<DueReportRow[]>([]);
   const [dueReportByBill, setDueReportByBill] = useState<DueByBillRow[]>([]);
   const [dueReceiveModes, setDueReceiveModes] = useState<Record<string, "cash" | "upi" | "card">>({});
@@ -320,13 +322,44 @@ export default function DueReportPage() {
   return (
     <main className={`min-h-screen bg-slate-100 p-4 sm:p-6 ${isDark ? "theme-dark" : ""}`}>
       <div className="mx-auto max-w-5xl">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-2xl font-bold text-slate-900">Due Report</h1>
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-slate-900">Due Report</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Link href="/" className="rounded-md bg-slate-200 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-300">
+                Dashboard
+              </Link>
+              {activeUser?.role === "admin" ? (
+                <Link href="/management" className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700">
+                  Management
+                </Link>
+              ) : null}
+              <Link href="/reports" className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">
+                Reports
+              </Link>
+              <Link href="/bills" className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700">
+                Bills
+              </Link>
+            </div>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
             {activeUser ? (
-              <p className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800">
+              <p className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800">
                 {activeUser.name} ({activeUser.role})
               </p>
+            ) : null}
+            {showNativeServerButton ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!openNativeServerSetup()) {
+                    setError("Server setup button works in Android app only");
+                  }
+                }}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
+              >
+                Server
+              </button>
             ) : null}
             <button
               type="button"
@@ -342,20 +375,6 @@ export default function DueReportPage() {
             >
               {isDark ? "Light Theme" : "Dark Theme"}
             </button>
-            <Link href="/" className="rounded-md bg-slate-200 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-300">
-              Dashboard
-            </Link>
-            {activeUser?.role === "admin" ? (
-              <Link href="/management" className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700">
-                Management
-              </Link>
-            ) : null}
-            <Link href="/reports" className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">
-              Reports
-            </Link>
-            <Link href="/bills" className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700">
-              Bills
-            </Link>
           </div>
         </div>
 

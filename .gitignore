@@ -27,3 +27,7 @@ dev.db
 
 # misc
 .DS_Store
+
+# android ide/local
+android/.idea/
+android/local.properties

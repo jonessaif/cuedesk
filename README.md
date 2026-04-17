@@ -42,7 +42,12 @@ It is built with Next.js + Prisma + SQLite and keeps backend logic as the single
   - daily snapshot storage (`DailyReport`)
   - analytics: table idle time, table-wise revenue/runtime, and hour-wise best/slow periods
   - revenue trend chart: day-wise for multi-day ranges, hour-wise for single day
-  - hourly chart includes a combined `08-11` bucket (cafe closed window)
+  - chart mode in reports:
+    - all tables: horizontal table-revenue comparison bars
+    - single table: bar trend (day-wise/hour-wise based on selected range)
+  - analytics can be filtered table-wise
+  - chart settings support global or table-level overrides (`auto/day/hour`, merged hour buckets, include/exclude closed bars)
+  - default hourly chart includes a combined `08-11` bucket (cafe closed window)
 - Auth and security:
   - PIN-based login (`4` digits)
   - mobile numeric keypad with auto-submit at 4 digits
@@ -133,6 +138,33 @@ For production:
 npm run build
 npm run start
 ```
+
+## Android LAN App (Capacitor)
+CueDesk Android app now supports runtime local server setup:
+- On first launch, app opens **Server Setup** screen.
+- Enter server `IP/Host` + `Port` (for example `192.168.1.50` and `3000`).
+- App saves this and opens CueDesk in WebView.
+- A **Server** button is available in Android headers to reopen setup from anywhere.
+- Server setup validates host/port reachability before opening the app WebView.
+
+Requirements:
+- Phone and server must be on same Wi-Fi.
+- Run server on all interfaces:
+```bash
+npm run start -- -H 0.0.0.0 -p 3000
+```
+
+Build/sync Android project:
+```bash
+npx cap sync android
+npx cap open android
+```
+
+Notes:
+- Android manifest enables cleartext HTTP for local LAN (`http://`).
+- If server is unreachable, app shows a short toast and returns to server setup.
+- Emulator host mapping: use `10.0.2.2` to reach host machine server.
+- Physical device should use real LAN IP (for example `192.168.1.50`).
 
 ## Status and Billing Truth Rules
 - `effectiveStatus = overrideStatus ?? status`

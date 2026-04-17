@@ -1,6 +1,10 @@
 import { requireOperatorOrAdmin } from "@/lib/authz";
 import { getBusinessDayRangeFromKeyWithReset, getBusinessDayRangeWithReset } from "@/lib/businessDay";
 import { prisma } from "@/lib/prisma";
+import {
+  getReportChartSettingsBundle,
+  type MergeBucket,
+} from "@/lib/report-chart-settings-service";
 import { getLedgerResetMinutesCached, hydrateLedgerResetMinutesCache } from "@/lib/settings-service";
 import { getEffectiveStatus } from "@/lib/session-status";
 
@@ -29,6 +33,17 @@ type RevenueSeriesPoint = {
 function parseIsoDate(value: string): Date | null {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseTableId(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error("Invalid tableId");
+  }
+  return parsed;
 }
 
 function toMinutes(ms: number): number {
@@ -70,23 +85,39 @@ function splitByBusinessDay(
 
 function buildHourlyRevenueSeries(
   hourlyRows: Array<{ hour: number; revenue: number }>,
+  mergeBuckets: MergeBucket[],
+  includeClosed: boolean,
 ): RevenueSeriesPoint[] {
   const byHour = new Map(hourlyRows.map((row) => [row.hour, row.revenue]));
+  const buckets = [...mergeBuckets].sort((a, b) => a.startHour - b.startHour || a.endHour - b.endHour);
+
   const points: RevenueSeriesPoint[] = [];
+  let bucketIndex = 0;
+
   for (let hour = 0; hour < 24; hour += 1) {
-    if (hour === 8) {
-      const combined = (byHour.get(8) ?? 0) + (byHour.get(9) ?? 0) + (byHour.get(10) ?? 0) + (byHour.get(11) ?? 0);
+    const bucket = buckets[bucketIndex];
+    if (bucket && hour === bucket.startHour) {
+      let sum = 0;
+      for (let cursor = bucket.startHour; cursor <= bucket.endHour; cursor += 1) {
+        sum += byHour.get(cursor) ?? 0;
+      }
       points.push({
-        label: "08-11",
-        revenue: roundMoney(combined),
+        label: bucket.label,
+        revenue: roundMoney(sum),
       });
-      hour = 11;
+      hour = bucket.endHour;
+      bucketIndex += 1;
       continue;
     }
+
     points.push({
       label: String(hour).padStart(2, "0"),
       revenue: roundMoney(byHour.get(hour) ?? 0),
     });
+  }
+
+  if (!includeClosed) {
+    return points.filter((point) => point.revenue > 0);
   }
   return points;
 }
@@ -213,6 +244,10 @@ export async function GET(request: Request) {
     const resetMinutes = getLedgerResetMinutesCached();
 
     const { searchParams } = new URL(request.url);
+    const selectedTableId = parseTableId(searchParams.get("tableId"));
+    const settingsBundle = await getReportChartSettingsBundle(prisma, selectedTableId);
+    const effectiveSettings = settingsBundle.effective;
+
     const windowInfo = deriveWindowFromParams(searchParams, resetMinutes);
     const windowStartMs = windowInfo.start.getTime();
     const windowEndMs = windowInfo.end.getTime();
@@ -222,6 +257,7 @@ export async function GET(request: Request) {
     }
 
     const tables = await prisma.table.findMany({
+      where: selectedTableId ? { id: selectedTableId } : undefined,
       orderBy: { name: "asc" },
       select: {
         id: true,
@@ -230,8 +266,13 @@ export async function GET(request: Request) {
       },
     });
 
+    if (selectedTableId && tables.length === 0) {
+      throw new Error("Table not found");
+    }
+
     const sessions = await prisma.session.findMany({
       where: {
+        ...(selectedTableId ? { tableId: selectedTableId } : {}),
         OR: [
           { startTime: { lt: windowInfo.end } },
           { overrideStartTime: { lt: windowInfo.end } },
@@ -412,32 +453,46 @@ export async function GET(request: Request) {
 
     const byRevenue = [...hourlyRows].sort((a, b) => b.revenue - a.revenue || b.runningMinutes - a.runningMinutes);
     const byUtilization = [...hourlyRows].sort((a, b) => b.utilizationPct - a.utilizationPct || b.runningMinutes - a.runningMinutes);
+    const slowestNonZeroRevenue = [...hourlyRows]
+      .filter((row) => row.revenue > 0)
+      .sort((a, b) => a.revenue - b.revenue || a.runningMinutes - b.runningMinutes)[0] ?? null;
+    const slowestNonZeroUtilization = [...hourlyRows]
+      .filter((row) => row.utilizationPct > 0)
+      .sort((a, b) => a.utilizationPct - b.utilizationPct || a.runningMinutes - b.runningMinutes)[0] ?? null;
+
+    const resolvedMode =
+      effectiveSettings.chartMode === "auto"
+        ? (windowInfo.reportDays > 1 ? "day" : "hour")
+        : effectiveSettings.chartMode;
 
     let revenueSeries: { mode: "day" | "hour"; points: RevenueSeriesPoint[] };
-    if (windowInfo.reportDays > 1) {
-      const dayPoints: RevenueSeriesPoint[] = [];
-      const rangeStart = windowInfo.startDate ?? getBusinessDayRangeWithReset(windowInfo.start, resetMinutes).key;
-      const rangeEnd = windowInfo.endDate ?? getBusinessDayRangeWithReset(new Date(windowInfo.end.getTime() - 1), resetMinutes).key;
-      const startRange = getBusinessDayRangeFromKeyWithReset(rangeStart, resetMinutes).start;
-      const endRange = getBusinessDayRangeFromKeyWithReset(rangeEnd, resetMinutes).start;
-
-      const cursor = new Date(startRange);
-      while (cursor.getTime() <= endRange.getTime()) {
-        const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-${String(cursor.getDate()).padStart(2, "0")}`;
-        dayPoints.push({
-          label: key.slice(5),
-          revenue: roundMoney(revenueByBusinessDayKey.get(key) ?? 0),
-        });
-        cursor.setDate(cursor.getDate() + 1);
+    if (resolvedMode === "day") {
+      const daySegments = splitByBusinessDay(windowStartMs, windowEndMs, resetMinutes);
+      const uniqueKeys: string[] = [];
+      for (const segment of daySegments) {
+        if (!uniqueKeys.includes(segment.key)) {
+          uniqueKeys.push(segment.key);
+        }
+      }
+      let points = uniqueKeys.map((key) => ({
+        label: key.slice(5),
+        revenue: roundMoney(revenueByBusinessDayKey.get(key) ?? 0),
+      }));
+      if (!effectiveSettings.includeClosed) {
+        points = points.filter((point) => point.revenue > 0);
       }
       revenueSeries = {
         mode: "day",
-        points: dayPoints,
+        points,
       };
     } else {
       revenueSeries = {
         mode: "hour",
-        points: buildHourlyRevenueSeries(hourlyRows),
+        points: buildHourlyRevenueSeries(
+          hourlyRows,
+          effectiveSettings.mergeBuckets,
+          effectiveSettings.includeClosed,
+        ),
       };
     }
 
@@ -467,11 +522,19 @@ export async function GET(request: Request) {
           hourly: hourlyRows,
           highlights: {
             bestRevenueHour: byRevenue[0] ?? null,
-            slowestRevenueHour: byRevenue[byRevenue.length - 1] ?? null,
+            slowestRevenueHour: slowestNonZeroRevenue,
             bestUtilizationHour: byUtilization[0] ?? null,
-            slowestUtilizationHour: byUtilization[byUtilization.length - 1] ?? null,
+            slowestUtilizationHour: slowestNonZeroUtilization,
           },
           revenueSeries,
+          settings: {
+            global: settingsBundle.global,
+            table: settingsBundle.table,
+            effective: {
+              ...settingsBundle.effective,
+              chartMode: resolvedMode,
+            },
+          },
         },
       },
       { status: 200 },

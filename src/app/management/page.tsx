@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { isNativeServerSetupAvailable, openNativeServerSetup } from "@/lib/native-server-setup";
 
 type ActiveUser = {
   id: number;
@@ -78,6 +79,7 @@ export default function ManagementPage() {
   const [newUserPin, setNewUserPin] = useState("");
   const [newUserRole, setNewUserRole] = useState<"operator" | "admin">("operator");
   const [userBusyId, setUserBusyId] = useState<number | null>(null);
+  const showNativeServerButton = themeReady && isNativeServerSetupAvailable();
   const [ledgerResetTime, setLedgerResetTime] = useState("10:00");
   const [ledgerResetBusy, setLedgerResetBusy] = useState(false);
 
@@ -574,12 +576,41 @@ export default function ManagementPage() {
   return (
     <main className={`min-h-screen bg-slate-100 p-4 sm:p-6 ${isDark ? "theme-dark" : ""}`}>
       <div className="mx-auto max-w-7xl">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-2xl font-bold text-slate-900">Management</h1>
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-slate-900">Management</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Link href="/" className="rounded-md bg-slate-200 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-300">
+                Dashboard
+              </Link>
+              <Link href="/reports" className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">
+                Reports
+              </Link>
+              <Link href="/due-report" className="rounded-md bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900">
+                Due Report
+              </Link>
+              <Link href="/bills" className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700">
+                Bills
+              </Link>
+            </div>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <p className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800">
               {activeUser.name} ({activeUser.role})
             </p>
+            {showNativeServerButton ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!openNativeServerSetup()) {
+                    setError("Server setup button works in Android app only");
+                  }
+                }}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
+              >
+                Server
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={logout}
@@ -594,9 +625,6 @@ export default function ManagementPage() {
             >
               {isDark ? "Light Theme" : "Dark Theme"}
             </button>
-            <Link href="/" className="rounded-md bg-slate-200 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-300">
-              Dashboard
-            </Link>
           </div>
         </div>
 

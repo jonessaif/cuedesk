@@ -13,6 +13,7 @@ model Table {
   ratePerMin Float
   sessions   Session[]
   sectionAssignments TableSectionAssignment[]
+  reportChartConfigs ReportChartConfig[]
 
   @@map("tables")
 }
@@ -174,6 +175,22 @@ model AppConfig {
   @@map("app_config")
 }
 
+model ReportChartConfig {
+  id             Int       @id @default(autoincrement())
+  targetKey      String    @unique
+  tableId        Int?
+  chartMode      ChartMode @default(auto)
+  mergeBucketsJson Json?
+  includeClosed  Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  table Table? @relation(fields: [tableId], references: [id], onDelete: Cascade)
+
+  @@index([tableId])
+  @@map("report_chart_configs")
+}
+
 enum PayerMode {
   none
   single
@@ -202,4 +219,10 @@ enum SessionOutcome {
 enum UserRole {
   operator
   admin
+}
+
+enum ChartMode {
+  auto
+  day
+  hour
 }
