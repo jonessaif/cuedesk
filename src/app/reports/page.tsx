@@ -1209,14 +1209,15 @@ export default function ReportsPage() {
   }, [ledgerCache, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate]);
 
   useEffect(() => {
-    if (!windowInfo.key) {
+    const businessDayKey = windowInfo.key;
+    if (!businessDayKey) {
       return;
     }
     // Keep manual filters anchored to business-day keys (10 AM reset aware).
-    setLedgerDate((prev) => (prev === windowInfo.key ? prev : windowInfo.key));
+    setLedgerDate((prev) => (prev === businessDayKey ? prev : businessDayKey));
     if (ledgerScope === "current") {
-      setLedgerStartDate((prev) => (prev === windowInfo.key ? prev : windowInfo.key));
-      setLedgerEndDate((prev) => (prev === windowInfo.key ? prev : windowInfo.key));
+      setLedgerStartDate((prev) => (prev === businessDayKey ? prev : businessDayKey));
+      setLedgerEndDate((prev) => (prev === businessDayKey ? prev : businessDayKey));
     }
   }, [windowInfo.key, ledgerScope]);
 
