@@ -200,6 +200,12 @@ type ChartPreferences = {
   };
 };
 
+type ReportQueryState = {
+  cacheKey: string;
+  query: string;
+  defaultWindow: LedgerWindow;
+};
+
 const DEFAULT_MERGE_BUCKETS: MergeBucket[] = [{ startHour: 8, endHour: 11, label: "08-11" }];
 const DEFAULT_CHART_PREFERENCES: ChartPreferences = {
   revenueSeries: {
@@ -412,6 +418,53 @@ function formatDateInputValue(value: Date): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function buildReportQueryState(args: {
+  scope: LedgerScope;
+  date: string;
+  startDate: string;
+  endDate: string;
+}): ReportQueryState | null {
+  if (args.scope === "current") {
+    return {
+      cacheKey: "current",
+      query: "scope=current",
+      defaultWindow: {
+        scope: "current",
+        key: null,
+        start: null,
+        end: null,
+      },
+    };
+  }
+
+  if (args.scope === "range") {
+    if (!args.startDate || !args.endDate || args.startDate > args.endDate) {
+      return null;
+    }
+    return {
+      cacheKey: `range:${args.startDate}:${args.endDate}`,
+      query: `scope=range&startDate=${encodeURIComponent(args.startDate)}&endDate=${encodeURIComponent(args.endDate)}`,
+      defaultWindow: {
+        scope: "range",
+        key: null,
+        start: null,
+        end: null,
+      },
+    };
+  }
+
+  return {
+    cacheKey: `day:${args.date}`,
+    query: `scope=day&date=${encodeURIComponent(args.date)}`,
+    defaultWindow: {
+      scope: "day",
+      key: args.date,
+      start: null,
+      end: null,
+    },
+  };
+}
+
 function normalizeMergeBucket(row: MergeBucket): MergeBucket {
   const startHour = Number.isFinite(row.startHour) ? Math.min(Math.max(Math.round(row.startHour), 0), 23) : 0;
   const endHour = Number.isFinite(row.endHour) ? Math.min(Math.max(Math.round(row.endHour), 0), 23) : 0;
@@ -520,14 +573,23 @@ export default function ReportsPage() {
     }
   }
 
-  async function fetchLedgerForDate(dateKey: string, options?: { priority?: boolean; force?: boolean }): Promise<void> {
+  function getCurrentReportQueryState(): ReportQueryState | null {
+    return buildReportQueryState({
+      scope: ledgerScope,
+      date: ledgerDate,
+      startDate: ledgerStartDate,
+      endDate: ledgerEndDate,
+    });
+  }
+
+  async function fetchLedgerForQuery(queryState: ReportQueryState, options?: { priority?: boolean; force?: boolean }): Promise<void> {
     if (!activeUserId) {
       return;
     }
-    if (!options?.force && ledgerCache[dateKey]) {
+    if (!options?.force && ledgerCache[queryState.cacheKey]) {
       return;
     }
-    const inflight = ledgerInflightRef.current.get(dateKey);
+    const inflight = ledgerInflightRef.current.get(queryState.cacheKey);
     if (inflight) {
       await inflight;
       return;
@@ -536,7 +598,7 @@ export default function ReportsPage() {
       if (options?.priority) {
         setLedgerLoading(true);
       }
-      const res = await fetch(`/api/ledger?date=${encodeURIComponent(dateKey)}`, {
+      const res = await fetch(`/api/ledger?${queryState.query}`, {
         cache: "no-store",
         headers: authHeaders(),
       });
@@ -570,14 +632,9 @@ export default function ReportsPage() {
           ltpValue: 0,
           cancelledCount: 0,
         },
-        window: data?.window ?? {
-          scope: "day",
-          key: dateKey,
-          start: null,
-          end: null,
-        },
+        window: data?.window ?? queryState.defaultWindow,
       };
-      setLedgerCache((prev) => ({ ...prev, [dateKey]: next }));
+      setLedgerCache((prev) => ({ ...prev, [queryState.cacheKey]: next }));
     })()
       .catch((e) => {
         if (options?.priority) {
@@ -586,23 +643,23 @@ export default function ReportsPage() {
         }
       })
       .finally(() => {
-        ledgerInflightRef.current.delete(dateKey);
+        ledgerInflightRef.current.delete(queryState.cacheKey);
         if (options?.priority) {
           setLedgerLoading(false);
         }
       });
-    ledgerInflightRef.current.set(dateKey, task);
+    ledgerInflightRef.current.set(queryState.cacheKey, task);
     await task;
   }
 
-  async function fetchAnalyticsForDate(dateKey: string, options?: { priority?: boolean; force?: boolean }): Promise<void> {
+  async function fetchAnalyticsForQuery(queryState: ReportQueryState, options?: { priority?: boolean; force?: boolean }): Promise<void> {
     if (!activeUserId) {
       return;
     }
-    if (!options?.force && analyticsCache[dateKey]) {
+    if (!options?.force && analyticsCache[queryState.cacheKey]) {
       return;
     }
-    const inflight = analyticsInflightRef.current.get(dateKey);
+    const inflight = analyticsInflightRef.current.get(queryState.cacheKey);
     if (inflight) {
       await inflight;
       return;
@@ -611,7 +668,7 @@ export default function ReportsPage() {
       if (options?.priority) {
         setAnalyticsLoading(true);
       }
-      const res = await fetch(`/api/analytics?date=${encodeURIComponent(dateKey)}`, {
+      const res = await fetch(`/api/analytics?${queryState.query}`, {
         cache: "no-store",
         headers: authHeaders(),
       });
@@ -623,7 +680,7 @@ export default function ReportsPage() {
       if (!nextAnalytics) {
         return;
       }
-      setAnalyticsCache((prev) => ({ ...prev, [dateKey]: nextAnalytics }));
+      setAnalyticsCache((prev) => ({ ...prev, [queryState.cacheKey]: nextAnalytics }));
     })()
       .catch((e) => {
         if (options?.priority) {
@@ -632,12 +689,12 @@ export default function ReportsPage() {
         }
       })
       .finally(() => {
-        analyticsInflightRef.current.delete(dateKey);
+        analyticsInflightRef.current.delete(queryState.cacheKey);
         if (options?.priority) {
           setAnalyticsLoading(false);
         }
       });
-    analyticsInflightRef.current.set(dateKey, task);
+    analyticsInflightRef.current.set(queryState.cacheKey, task);
     await task;
   }
 
@@ -907,7 +964,10 @@ export default function ReportsPage() {
       }
 
       setSettingsOpen(false);
-      await fetchAnalyticsForDate(ledgerDate, { priority: activeTab === "analytics", force: true });
+      const queryState = getCurrentReportQueryState();
+      if (queryState) {
+        await fetchAnalyticsForQuery(queryState, { priority: activeTab === "analytics", force: true });
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to save report chart settings";
       setError(message);
@@ -987,20 +1047,27 @@ export default function ReportsPage() {
     if (!activeUserId) {
       return;
     }
-    const dateKey = ledgerDate;
+    const queryState = getCurrentReportQueryState();
+    if (!queryState) {
+      return;
+    }
     if (activeTab === "ledger") {
-      void fetchLedgerForDate(dateKey, { priority: true }).then(() => {
-        void fetchAnalyticsForDate(dateKey, { priority: false });
+      void fetchLedgerForQuery(queryState, { priority: true }).then(() => {
+        void fetchAnalyticsForQuery(queryState, { priority: false });
       });
       return;
     }
-    void fetchAnalyticsForDate(dateKey, { priority: true }).then(() => {
-      void fetchLedgerForDate(dateKey, { priority: false });
+    void fetchAnalyticsForQuery(queryState, { priority: true }).then(() => {
+      void fetchLedgerForQuery(queryState, { priority: false });
     });
-  }, [activeUserId, activeTab, ledgerDate]);
+  }, [activeUserId, activeTab, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate]);
 
   useEffect(() => {
-    const ledgerData = ledgerCache[ledgerDate];
+    const queryState = getCurrentReportQueryState();
+    if (!queryState) {
+      return;
+    }
+    const ledgerData = ledgerCache[queryState.cacheKey];
     if (ledgerData) {
       setRows(ledgerData.rows);
       setSummary(ledgerData.summary);
@@ -1038,10 +1105,14 @@ export default function ReportsPage() {
       start: null,
       end: null,
     });
-  }, [ledgerCache, ledgerDate]);
+  }, [ledgerCache, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate]);
 
   useEffect(() => {
-    const analyticsData = analyticsCache[ledgerDate] ?? null;
+    const queryState = getCurrentReportQueryState();
+    if (!queryState) {
+      return;
+    }
+    const analyticsData = analyticsCache[queryState.cacheKey] ?? null;
     setAnalytics(analyticsData);
     setPreviousAnalytics(null);
     if (!analyticsData) {
@@ -1055,7 +1126,7 @@ export default function ReportsPage() {
     if (analyticsTableId !== "all" && !nextOptions.find((row) => String(row.id) === analyticsTableId)) {
       setAnalyticsTableId("all");
     }
-  }, [analyticsCache, ledgerDate, analyticsTableId]);
+  }, [analyticsCache, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate, analyticsTableId]);
 
   useEffect(() => {
     if (activeTab === "analytics") {
@@ -1182,7 +1253,10 @@ export default function ReportsPage() {
                 onClick={() => setActiveTab("ledger")}
                 onMouseEnter={() => {
                   if (activeUserId) {
-                    void fetchLedgerForDate(ledgerDate, { priority: false });
+                    const queryState = getCurrentReportQueryState();
+                    if (queryState) {
+                      void fetchLedgerForQuery(queryState, { priority: false });
+                    }
                   }
                 }}
                 className={`rounded-md px-3 py-1 text-xs font-medium ${activeTab === "ledger" ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-200"}`}
@@ -1194,7 +1268,10 @@ export default function ReportsPage() {
                 onClick={() => setActiveTab("analytics")}
                 onMouseEnter={() => {
                   if (activeUserId) {
-                    void fetchAnalyticsForDate(ledgerDate, { priority: false });
+                    const queryState = getCurrentReportQueryState();
+                    if (queryState) {
+                      void fetchAnalyticsForQuery(queryState, { priority: false });
+                    }
                   }
                 }}
                 className={`rounded-md px-3 py-1 text-xs font-medium ${activeTab === "analytics" ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-200"}`}
