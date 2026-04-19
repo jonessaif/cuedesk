@@ -2028,6 +2028,7 @@ export const sessionService = {
       ? normalizeRangeInput(input?.startDate, input?.endDate)
       : null;
 
+    const nowMs = now.getTime();
     const scopedRows = sortedRows.filter((row) => {
       const rowKey = row.businessDayKey ?? toBusinessDayKeyFromDate(new Date(row.startTime));
       if (scope === "day") {
@@ -2036,7 +2037,11 @@ export const sessionService = {
       if (scope === "range" && selectedRange) {
         return rowKey >= selectedRange.startDate && rowKey <= selectedRange.endDate;
       }
-      return rowKey === currentBusinessDayKey;
+      if (rowKey !== currentBusinessDayKey) {
+        return false;
+      }
+      const effectiveStart = new Date(row.startTime).getTime();
+      return effectiveStart <= nowMs;
     });
     const currentWindow = toBusinessDayWindowFromKey(currentBusinessDayKey);
     const selectedWindow = toBusinessDayWindowFromKey(selectedDayKey);
@@ -2056,7 +2061,7 @@ export const sessionService = {
       ? selectedWindow.end
       : scope === "range" && rangeEndWindow
         ? rangeEndWindow.end
-        : currentBusinessDay.end;
+        : now;
 
     const allPayments = await (
       paymentModel as {

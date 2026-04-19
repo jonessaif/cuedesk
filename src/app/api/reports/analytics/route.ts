@@ -535,13 +535,14 @@ export async function GET(request: Request) {
         overlapMinutes,
       );
       const sessionRevenue = finalRevenueBySessionId.get(session.id) ?? 0;
+      const sessionBusinessDayKey = session.businessDayKey ?? getBusinessDayRangeWithReset(effectiveStart, resetMinutes).key;
       const revenueShare = sessionRevenue > 0
         ? sessionRevenue * (overlapMinutes / fullDurationMinutes)
         : 0;
 
       tableRevenue.set(
         session.tableId,
-        (tableRevenue.get(session.tableId) ?? 0) + revenueShare,
+        (tableRevenue.get(session.tableId) ?? 0) + sessionRevenue,
       );
 
       let chunkStart = overlap.startMs;
@@ -563,18 +564,10 @@ export async function GET(request: Request) {
         chunkStart = chunkEnd;
       }
 
-      const daySegments = splitByBusinessDay(overlap.startMs, overlap.endMs, resetMinutes);
-      for (const segment of daySegments) {
-        const segmentMinutes = toMinutes(segment.endMs - segment.startMs);
-        if (segmentMinutes <= 0) {
-          continue;
-        }
-        const segmentRevenue = revenueShare > 0
-          ? revenueShare * (segmentMinutes / overlapMinutes)
-          : 0;
+      if (sessionRevenue > 0) {
         revenueByBusinessDayKey.set(
-          segment.key,
-          (revenueByBusinessDayKey.get(segment.key) ?? 0) + segmentRevenue,
+          sessionBusinessDayKey,
+          (revenueByBusinessDayKey.get(sessionBusinessDayKey) ?? 0) + sessionRevenue,
         );
       }
     }
