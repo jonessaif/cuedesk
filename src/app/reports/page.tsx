@@ -572,7 +572,7 @@ export default function ReportsPage() {
   const [activeUserId, setActiveUserId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<ReportsTab>("ledger");
 
-  const [ledgerScope, setLedgerScope] = useState<LedgerScope>("day");
+  const [ledgerScope, setLedgerScope] = useState<LedgerScope>("current");
   const [ledgerDate, setLedgerDate] = useState<string>(todayDateInputValue());
   const [ledgerStartDate, setLedgerStartDate] = useState<string>(todayDateInputValue());
   const [ledgerEndDate, setLedgerEndDate] = useState<string>(todayDateInputValue());
@@ -1231,7 +1231,7 @@ export default function ReportsPage() {
     }
     const prevBase = buildPreviousReportQueryState({
       scope: ledgerScope,
-      date: ledgerDate,
+      date: ledgerScope === "current" ? (windowInfo.key ?? ledgerDate) : ledgerDate,
       startDate: ledgerStartDate,
       endDate: ledgerEndDate,
     });
@@ -1247,7 +1247,7 @@ export default function ReportsPage() {
     }
     setPreviousAnalytics(null);
     void fetchAnalyticsForQuery(prevQuery, { priority: false });
-  }, [activeUserId, analyticsCache, analyticsTableId, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate]);
+  }, [activeUserId, analyticsCache, analyticsTableId, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate, windowInfo.key]);
 
   useEffect(() => {
     if (activeTab === "analytics") {
@@ -1422,7 +1422,7 @@ export default function ReportsPage() {
               onClick={() => setLedgerScope("current")}
               className={`rounded-md px-3 py-1 text-xs font-medium ${ledgerScope === "current" ? "bg-slate-900 text-white" : "bg-slate-200 text-slate-800"}`}
             >
-              Current (10 AM reset)
+              Current Business Day
             </button>
           </div>
 
