@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { PageHeader } from "@/components/page-header";
 import { isNativeServerSetupAvailable, openNativeServerSetup } from "@/lib/native-server-setup";
 
 type ActiveUser = {
@@ -82,6 +83,7 @@ export default function ManagementPage() {
   const showNativeServerButton = themeReady && isNativeServerSetupAvailable();
   const [ledgerResetTime, setLedgerResetTime] = useState("10:00");
   const [ledgerResetBusy, setLedgerResetBusy] = useState(false);
+  const [openControlCard, setOpenControlCard] = useState<"tables" | "users" | "sections" | "ledger" | null>(null);
 
   function authHeaders(): HeadersInit {
     if (!activeUserId) {
@@ -576,384 +578,438 @@ export default function ManagementPage() {
   return (
     <main className={`min-h-screen bg-slate-100 p-4 sm:p-6 ${isDark ? "theme-dark" : ""}`}>
       <div className="mx-auto max-w-7xl">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-slate-900">Management</h1>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Link href="/" className="rounded-md bg-slate-200 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-300">
-                Dashboard
-              </Link>
-              <Link href="/reports" className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">
-                Reports
-              </Link>
-              <Link href="/due-report" className="rounded-md bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900">
-                Due Report
-              </Link>
-              <Link href="/bills" className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700">
-                Bills
-              </Link>
-            </div>
-          </div>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <p className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800">
-              {activeUser.name} ({activeUser.role})
-            </p>
-            {showNativeServerButton ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (!openNativeServerSetup()) {
-                    setError("Server setup button works in Android app only");
-                  }
-                }}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-              >
-                Server
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={logout}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-            >
-              Logout
-            </button>
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-            >
-              {isDark ? "Light Theme" : "Dark Theme"}
-            </button>
-          </div>
-        </div>
+        <PageHeader
+          title="Management"
+          navItems={[
+            {
+              href: "/",
+              label: "Dashboard",
+              className: "rounded-md bg-slate-200 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-300",
+            },
+            {
+              href: "/reports",
+              label: "Reports",
+              className: "rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700",
+            },
+            {
+              href: "/due-report",
+              label: "Due Report",
+              className: "rounded-md bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900",
+            },
+            {
+              href: "/bills",
+              label: "Bills",
+              className: "rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700",
+            },
+          ]}
+          userLabel={`${activeUser.name} (${activeUser.role})`}
+          showServerButton={showNativeServerButton}
+          onServerClick={() => {
+            if (!openNativeServerSetup()) {
+              setError("Server setup button works in Android app only");
+            }
+          }}
+          onLogout={logout}
+          onToggleTheme={toggleTheme}
+          themeLabel={isDark ? "Light Theme" : "Dark Theme"}
+          isDark={isDark}
+        />
 
         {error ? <p className="mb-3 rounded-md bg-red-100 p-2 text-sm text-red-700">{error}</p> : null}
         {message ? <p className="mb-3 rounded-md bg-emerald-100 p-2 text-sm text-emerald-700">{message}</p> : null}
 
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid items-start gap-4 lg:grid-cols-2">
           <section className="rounded-xl border border-slate-300 bg-white p-4 shadow-md">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-lg font-semibold text-slate-900">Table Management</h2>
-              <button
-                type="button"
-                onClick={() => void loadAll()}
-                className="rounded-md bg-slate-800 px-2 py-1 text-xs font-medium text-white hover:bg-slate-900"
-              >
-                Refresh
-              </button>
-            </div>
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
-              <input
-                value={newTableName}
-                onChange={(e) => setNewTableName(e.target.value)}
-                placeholder="Table name"
-                className="rounded border border-slate-300 px-2 py-2 text-sm"
-              />
-              <select
-                value={newTableSectionId}
-                onChange={(e) => setNewTableSectionId(e.target.value)}
-                className="rounded border border-slate-300 px-2 py-2 text-sm"
-              >
-                <option value="">Select section</option>
-                {sections.map((section) => (
-                  <option key={section.id} value={section.id}>{section.name}</option>
-                ))}
-              </select>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  value={newTableRate}
-                  onChange={(e) => setNewTableRate(e.target.value)}
-                  placeholder={newTableRateUnit === "hour" ? "Rate/hr" : "Rate/min"}
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  className="rounded border border-slate-300 px-2 py-2 text-sm"
-                />
-                <select
-                  value={newTableRateUnit}
-                  onChange={(e) => setNewTableRateUnit(e.target.value as "minute" | "hour")}
-                  className="rounded border border-slate-300 px-2 py-2 text-sm"
-                >
-                  <option value="minute">/min</option>
-                  <option value="hour">/hr</option>
-                </select>
+            <button
+              type="button"
+              onClick={() => setOpenControlCard((prev) => (prev === "tables" ? null : "tables"))}
+              className="flex w-full items-center justify-between gap-2 text-left"
+            >
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Table Management</h2>
+                <p className="text-xs text-slate-600">{tables.length} tables configured</p>
               </div>
-              <button
-                type="button"
-                onClick={() => void createTable()}
-                className="rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-              >
-                Add Table
-              </button>
-            </div>
+              <span className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs font-semibold text-slate-700">
+                {openControlCard === "tables" ? "▲" : "▼"}
+              </span>
+            </button>
 
-            <div className="mt-3 max-h-[60vh] space-y-2 overflow-auto">
-              {tables.map((table) => (
-                <div key={table.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  {editingTableId === table.id ? (
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-5">
-                      <input
-                        value={editingTableName}
-                        onChange={(e) => setEditingTableName(e.target.value)}
-                        className="rounded border border-slate-300 px-2 py-1 text-sm sm:col-span-2"
-                      />
-                      <select
-                        value={editingTableSectionId}
-                        onChange={(e) => setEditingTableSectionId(e.target.value)}
-                        className="rounded border border-slate-300 px-2 py-1 text-sm"
-                      >
-                        <option value="">No section</option>
-                        {sections.map((section) => (
-                          <option key={section.id} value={section.id}>{section.name}</option>
-                        ))}
-                      </select>
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          value={editingTableRate}
-                          onChange={(e) => setEditingTableRate(e.target.value)}
-                          type="number"
-                          min="0.01"
-                          step="0.01"
-                          className="rounded border border-slate-300 px-2 py-1 text-sm"
-                        />
-                        <select
-                          value={editingTableRateUnit}
-                          onChange={(e) => setEditingTableRateUnit(e.target.value as "minute" | "hour")}
-                          className="rounded border border-slate-300 px-2 py-1 text-sm"
-                        >
-                          <option value="minute">/min</option>
-                          <option value="hour">/hr</option>
-                        </select>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          disabled={tableBusyId === table.id}
-                          onClick={() => void saveEditTable(table.id)}
-                          className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingTableId(null)}
-                          className="rounded bg-slate-200 px-2 py-1 text-xs"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">{table.name}</p>
-                        <p className="text-xs text-slate-600">
-                          Section: {table.sectionName ?? "Other"} |{" "}
-                          Rate: ₹{isHourlyTableName(table.name) ? Math.round(table.ratePerMin * 60) : Math.round(table.ratePerMin)}
-                          {isHourlyTableName(table.name) ? "/hr" : "/min"} | State: {table.state}
-                        </p>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          disabled={tableBusyId === table.id}
-                          onClick={() => startEditTable(table)}
-                          className="rounded bg-slate-200 px-2 py-1 text-xs text-slate-800 hover:bg-slate-300 disabled:opacity-50"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          disabled={tableBusyId === table.id}
-                          onClick={() => void deleteTable(table.id)}
-                          className="rounded bg-red-100 px-2 py-1 text-xs text-red-700 hover:bg-red-200 disabled:opacity-50"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  )}
+            {openControlCard === "tables" ? (
+              <div className="mt-3 border-t border-slate-200 pt-3">
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void loadAll()}
+                    className="rounded-md bg-slate-800 px-2 py-1 text-xs font-medium text-white hover:bg-slate-900"
+                  >
+                    Refresh
+                  </button>
                 </div>
-              ))}
-              {!loading && tables.length === 0 ? <p className="text-sm text-slate-600">No tables found.</p> : null}
-            </div>
+
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
+                  <input
+                    value={newTableName}
+                    onChange={(e) => setNewTableName(e.target.value)}
+                    placeholder="Table name"
+                    className="rounded border border-slate-300 px-2 py-2 text-sm"
+                  />
+                  <select
+                    value={newTableSectionId}
+                    onChange={(e) => setNewTableSectionId(e.target.value)}
+                    className="rounded border border-slate-300 px-2 py-2 text-sm"
+                  >
+                    <option value="">Select section</option>
+                    {sections.map((section) => (
+                      <option key={section.id} value={section.id}>{section.name}</option>
+                    ))}
+                  </select>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      value={newTableRate}
+                      onChange={(e) => setNewTableRate(e.target.value)}
+                      placeholder={newTableRateUnit === "hour" ? "Rate/hr" : "Rate/min"}
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      className="rounded border border-slate-300 px-2 py-2 text-sm"
+                    />
+                    <select
+                      value={newTableRateUnit}
+                      onChange={(e) => setNewTableRateUnit(e.target.value as "minute" | "hour")}
+                      className="rounded border border-slate-300 px-2 py-2 text-sm"
+                    >
+                      <option value="minute">/min</option>
+                      <option value="hour">/hr</option>
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void createTable()}
+                    className="rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                  >
+                    Add Table
+                  </button>
+                </div>
+
+                <div className="mt-3 max-h-[60vh] space-y-2 overflow-auto">
+                  {tables.map((table) => (
+                    <div key={table.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      {editingTableId === table.id ? (
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-5">
+                          <input
+                            value={editingTableName}
+                            onChange={(e) => setEditingTableName(e.target.value)}
+                            className="rounded border border-slate-300 px-2 py-1 text-sm sm:col-span-2"
+                          />
+                          <select
+                            value={editingTableSectionId}
+                            onChange={(e) => setEditingTableSectionId(e.target.value)}
+                            className="rounded border border-slate-300 px-2 py-1 text-sm"
+                          >
+                            <option value="">No section</option>
+                            {sections.map((section) => (
+                              <option key={section.id} value={section.id}>{section.name}</option>
+                            ))}
+                          </select>
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              value={editingTableRate}
+                              onChange={(e) => setEditingTableRate(e.target.value)}
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              className="rounded border border-slate-300 px-2 py-1 text-sm"
+                            />
+                            <select
+                              value={editingTableRateUnit}
+                              onChange={(e) => setEditingTableRateUnit(e.target.value as "minute" | "hour")}
+                              className="rounded border border-slate-300 px-2 py-1 text-sm"
+                            >
+                              <option value="minute">/min</option>
+                              <option value="hour">/hr</option>
+                            </select>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              disabled={tableBusyId === table.id}
+                              onClick={() => void saveEditTable(table.id)}
+                              className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingTableId(null)}
+                              className="rounded bg-slate-200 px-2 py-1 text-xs"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">{table.name}</p>
+                            <p className="text-xs text-slate-600">
+                              Section: {table.sectionName ?? "Other"} |{" "}
+                              Rate: ₹{isHourlyTableName(table.name) ? Math.round(table.ratePerMin * 60) : Math.round(table.ratePerMin)}
+                              {isHourlyTableName(table.name) ? "/hr" : "/min"} | State: {table.state}
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              disabled={tableBusyId === table.id}
+                              onClick={() => startEditTable(table)}
+                              className="rounded bg-slate-200 px-2 py-1 text-xs text-slate-800 hover:bg-slate-300 disabled:opacity-50"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              disabled={tableBusyId === table.id}
+                              onClick={() => void deleteTable(table.id)}
+                              className="rounded bg-red-100 px-2 py-1 text-xs text-red-700 hover:bg-red-200 disabled:opacity-50"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {!loading && tables.length === 0 ? <p className="text-sm text-slate-600">No tables found.</p> : null}
+                </div>
+              </div>
+            ) : null}
           </section>
 
           <section className="rounded-xl border border-slate-300 bg-white p-4 shadow-md">
-            <h2 className="text-lg font-semibold text-slate-900">User Management</h2>
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
-              <input
-                value={newUserName}
-                onChange={(e) => setNewUserName(e.target.value)}
-                placeholder="User name"
-                className="rounded border border-slate-300 px-2 py-2 text-sm"
-              />
-              <input
-                value={newUserPin}
-                onChange={(e) => setNewUserPin(e.target.value)}
-                placeholder="PIN (4 digits)"
-                inputMode="numeric"
-                maxLength={4}
-                className="rounded border border-slate-300 px-2 py-2 text-sm"
-              />
-              <select
-                value={newUserRole}
-                onChange={(e) => setNewUserRole(e.target.value as "operator" | "admin")}
-                className="rounded border border-slate-300 px-2 py-2 text-sm"
-              >
-                <option value="operator">operator</option>
-                <option value="admin">admin</option>
-              </select>
-              <button
-                type="button"
-                onClick={() => void createUser()}
-                className="rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-              >
-                Add User
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setOpenControlCard((prev) => (prev === "users" ? null : "users"))}
+              className="flex w-full items-center justify-between gap-2 text-left"
+            >
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">User Management</h2>
+                <p className="text-xs text-slate-600">{users.filter((user) => user.isActive).length}/{users.length} active users</p>
+              </div>
+              <span className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs font-semibold text-slate-700">
+                {openControlCard === "users" ? "▲" : "▼"}
+              </span>
+            </button>
 
-            <div className="mt-3 max-h-[60vh] space-y-2 overflow-auto">
-              {users.map((user) => (
-                <div key={user.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">{user.name}</p>
-                    <p className="text-xs text-slate-600">#{user.id}</p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      value={user.role}
-                      disabled={userBusyId === user.id}
-                      onChange={(e) =>
-                        void updateUser(user.id, { role: e.target.value as "operator" | "admin" })
-                      }
-                      className="rounded border border-slate-300 px-2 py-1 text-xs"
-                    >
-                      <option value="operator">operator</option>
-                      <option value="admin">admin</option>
-                    </select>
-                    <button
-                      type="button"
-                      disabled={userBusyId === user.id}
-                      onClick={() => void updateUser(user.id, { isActive: !user.isActive })}
-                      className={`rounded px-2 py-1 text-xs font-medium ${
-                        user.isActive
-                          ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-                          : "bg-slate-200 text-slate-700 hover:bg-slate-300"
-                      }`}
-                    >
-                      {user.isActive ? "Active" : "Inactive"}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={userBusyId === user.id}
-                      onClick={() => void deleteUser(user.id, user.name)}
-                      className="rounded bg-red-100 px-2 py-1 text-xs text-red-700 hover:bg-red-200 disabled:opacity-50"
-                    >
-                      Delete
-                    </button>
-                  </div>
+            {openControlCard === "users" ? (
+              <div className="mt-3 border-t border-slate-200 pt-3">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+                  <input
+                    value={newUserName}
+                    onChange={(e) => setNewUserName(e.target.value)}
+                    placeholder="User name"
+                    className="rounded border border-slate-300 px-2 py-2 text-sm"
+                  />
+                  <input
+                    value={newUserPin}
+                    onChange={(e) => setNewUserPin(e.target.value)}
+                    placeholder="PIN (4 digits)"
+                    inputMode="numeric"
+                    maxLength={4}
+                    className="rounded border border-slate-300 px-2 py-2 text-sm"
+                  />
+                  <select
+                    value={newUserRole}
+                    onChange={(e) => setNewUserRole(e.target.value as "operator" | "admin")}
+                    className="rounded border border-slate-300 px-2 py-2 text-sm"
+                  >
+                    <option value="operator">operator</option>
+                    <option value="admin">admin</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void createUser()}
+                    className="rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                  >
+                    Add User
+                  </button>
                 </div>
-              ))}
-              {!loading && users.length === 0 ? <p className="text-sm text-slate-600">No users found.</p> : null}
-            </div>
-          </section>
 
-          <section className="rounded-xl border border-slate-300 bg-white p-4 shadow-md lg:col-span-2">
-            <h2 className="text-lg font-semibold text-slate-900">Section Management</h2>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <input
-                value={newSectionName}
-                onChange={(e) => setNewSectionName(e.target.value)}
-                placeholder="New section name"
-                className="rounded border border-slate-300 px-2 py-2 text-sm"
-              />
-              <button
-                type="button"
-                onClick={() => void createSection()}
-                className="rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-              >
-                Add Section
-              </button>
-            </div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {sections.map((section) => (
-                <div key={section.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  {editingSectionId === section.id ? (
-                    <div className="space-y-2">
-                      <input
-                        value={editingSectionName}
-                        onChange={(e) => setEditingSectionName(e.target.value)}
-                        className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                      />
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          disabled={sectionBusyId === section.id}
-                          onClick={() => void saveSection(section.id)}
-                          className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingSectionId(null)}
-                          className="rounded bg-slate-200 px-2 py-1 text-xs"
-                        >
-                          Cancel
-                        </button>
+                <div className="mt-3 max-h-[60vh] space-y-2 overflow-auto">
+                  {users.map((user) => (
+                    <div key={user.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">{user.name}</p>
+                        <p className="text-xs text-slate-600">#{user.id}</p>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-semibold text-slate-900">{section.name}</p>
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          value={user.role}
+                          disabled={userBusyId === user.id}
+                          onChange={(e) =>
+                            void updateUser(user.id, { role: e.target.value as "operator" | "admin" })
+                          }
+                          className="rounded border border-slate-300 px-2 py-1 text-xs"
+                        >
+                          <option value="operator">operator</option>
+                          <option value="admin">admin</option>
+                        </select>
                         <button
                           type="button"
-                          onClick={() => startEditSection(section)}
-                          className="rounded bg-slate-200 px-2 py-1 text-xs text-slate-800 hover:bg-slate-300"
+                          disabled={userBusyId === user.id}
+                          onClick={() => void updateUser(user.id, { isActive: !user.isActive })}
+                          className={`rounded px-2 py-1 text-xs font-medium ${
+                            user.isActive
+                              ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                              : "bg-slate-200 text-slate-700 hover:bg-slate-300"
+                          }`}
                         >
-                          Edit
+                          {user.isActive ? "Active" : "Inactive"}
                         </button>
                         <button
                           type="button"
-                          disabled={sectionBusyId === section.id}
-                          onClick={() => void deleteSection(section.id)}
+                          disabled={userBusyId === user.id}
+                          onClick={() => void deleteUser(user.id, user.name)}
                           className="rounded bg-red-100 px-2 py-1 text-xs text-red-700 hover:bg-red-200 disabled:opacity-50"
                         >
                           Delete
                         </button>
                       </div>
                     </div>
-                  )}
+                  ))}
+                  {!loading && users.length === 0 ? <p className="text-sm text-slate-600">No users found.</p> : null}
                 </div>
-              ))}
-              {sections.length === 0 ? <p className="text-sm text-slate-600">No sections yet.</p> : null}
-            </div>
+              </div>
+            ) : null}
           </section>
 
-          <section className="rounded-xl border border-slate-300 bg-white p-4 shadow-md lg:col-span-2">
-            <h2 className="text-lg font-semibold text-slate-900">Ledger Reset Time</h2>
-            <p className="mt-1 text-xs text-slate-600">
-              Set the daily reset boundary (once every 24 hours). Example: 10:00 means business day runs 10:00 to next day 10:00.
-            </p>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <input
-                type="time"
-                value={ledgerResetTime}
-                onChange={(e) => setLedgerResetTime(e.target.value)}
-                className="rounded border border-slate-300 px-2 py-2 text-sm"
-              />
-              <button
-                type="button"
-                disabled={ledgerResetBusy}
-                onClick={() => void saveLedgerResetTime()}
-                className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-              >
-                {ledgerResetBusy ? "Saving..." : "Save Reset Time"}
-              </button>
-            </div>
+          <section className="rounded-xl border border-slate-300 bg-white p-4 shadow-md">
+            <button
+              type="button"
+              onClick={() => setOpenControlCard((prev) => (prev === "sections" ? null : "sections"))}
+              className="flex w-full items-center justify-between gap-2 text-left"
+            >
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Section Management</h2>
+                <p className="text-xs text-slate-600">{sections.length} sections available</p>
+              </div>
+              <span className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs font-semibold text-slate-700">
+                {openControlCard === "sections" ? "▲" : "▼"}
+              </span>
+            </button>
+
+            {openControlCard === "sections" ? (
+              <div className="mt-3 border-t border-slate-200 pt-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={newSectionName}
+                    onChange={(e) => setNewSectionName(e.target.value)}
+                    placeholder="New section name"
+                    className="rounded border border-slate-300 px-2 py-2 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void createSection()}
+                    className="rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                  >
+                    Add Section
+                  </button>
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {sections.map((section) => (
+                    <div key={section.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      {editingSectionId === section.id ? (
+                        <div className="space-y-2">
+                          <input
+                            value={editingSectionName}
+                            onChange={(e) => setEditingSectionName(e.target.value)}
+                            className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              disabled={sectionBusyId === section.id}
+                              onClick={() => void saveSection(section.id)}
+                              className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingSectionId(null)}
+                              className="rounded bg-slate-200 px-2 py-1 text-xs"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-semibold text-slate-900">{section.name}</p>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => startEditSection(section)}
+                              className="rounded bg-slate-200 px-2 py-1 text-xs text-slate-800 hover:bg-slate-300"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              disabled={sectionBusyId === section.id}
+                              onClick={() => void deleteSection(section.id)}
+                              className="rounded bg-red-100 px-2 py-1 text-xs text-red-700 hover:bg-red-200 disabled:opacity-50"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {sections.length === 0 ? <p className="text-sm text-slate-600">No sections yet.</p> : null}
+                </div>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="rounded-xl border border-slate-300 bg-white p-4 shadow-md">
+            <button
+              type="button"
+              onClick={() => setOpenControlCard((prev) => (prev === "ledger" ? null : "ledger"))}
+              className="flex w-full items-center justify-between gap-2 text-left"
+            >
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Ledger Reset Time</h2>
+                <p className="text-xs text-slate-600">Current reset: {ledgerResetTime}</p>
+              </div>
+              <span className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs font-semibold text-slate-700">
+                {openControlCard === "ledger" ? "▲" : "▼"}
+              </span>
+            </button>
+
+            {openControlCard === "ledger" ? (
+              <div className="mt-3 border-t border-slate-200 pt-3">
+                <p className="text-xs text-slate-600">
+                  Set the daily reset boundary (once every 24 hours). Example: 10:00 means business day runs 10:00 to next day 10:00.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <input
+                    type="time"
+                    value={ledgerResetTime}
+                    onChange={(e) => setLedgerResetTime(e.target.value)}
+                    className="rounded border border-slate-300 px-2 py-2 text-sm"
+                  />
+                  <button
+                    type="button"
+                    disabled={ledgerResetBusy}
+                    onClick={() => void saveLedgerResetTime()}
+                    className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {ledgerResetBusy ? "Saving..." : "Save Reset Time"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </section>
         </div>
       </div>

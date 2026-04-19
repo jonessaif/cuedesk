@@ -180,11 +180,13 @@ function deriveWindowFromParams(searchParams: URLSearchParams, resetMinutes: num
     if (!startAt || !endAt || endAt.getTime() <= startAt.getTime()) {
       throw new Error("Invalid custom timeframe");
     }
+    const customDurationMs = endAt.getTime() - startAt.getTime();
+    const customReportDays = Math.max(1, Math.ceil(customDurationMs / (24 * 60 * 60 * 1000)));
     return {
       scope: "custom",
       start: startAt,
       end: endAt,
-      reportDays: 1,
+      reportDays: customReportDays,
     };
   }
 
@@ -307,6 +309,7 @@ export async function GET(request: Request) {
     const revenueByBusinessDayKey = new Map<string, number>();
 
     const windowMinutes = toMinutes(windowEndMs - windowStartMs);
+    const nowMs = Date.now();
 
     for (const tableId of tableIds) {
       tableIntervals.set(tableId, []);
@@ -325,9 +328,10 @@ export async function GET(request: Request) {
         overrideStatus: session.overrideStatus,
       });
       const effectiveStart = session.overrideStartTime ?? session.startTime;
-      const rawEnd = effectiveStatus === "running"
+      const rawEndCandidate = effectiveStatus === "running"
         ? windowInfo.end
         : session.overrideEndTime ?? session.endTime ?? windowInfo.end;
+      const rawEnd = new Date(Math.min(rawEndCandidate.getTime(), nowMs));
 
       const overlap = clampOverlap(
         effectiveStart.getTime(),

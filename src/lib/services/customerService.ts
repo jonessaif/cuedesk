@@ -78,7 +78,7 @@ export const customerService = {
             orderBy: { lastSeenAt: "desc" };
             take: number;
             select: { id: true; name: true; phone: true; lastSeenAt: true };
-          }) => Promise<Array<{ id: number; name: string; phone: string; lastSeenAt: Date }>>;
+        }) => Promise<Array<{ id: number; name: string; phone: string | null; lastSeenAt: Date }>>;
         }
       ).findMany({
         where: {
@@ -139,7 +139,11 @@ export const customerService = {
       })
       : [];
 
-    const existingPhones = new Set(customerRows.map((row) => row.phone));
+    const existingPhones = new Set(
+      customerRows
+        .map((row) => row.phone?.trim() ?? "")
+        .filter((phone) => phone.length > 0),
+    );
     const dueFallback = dueRows
       .map((row) => ({
         id: row.id,
@@ -195,7 +199,7 @@ export const customerService = {
         stats.set(key, {
           key,
           name: row.name.trim(),
-          phone: row.phone.trim(),
+          phone: row.phone?.trim() ?? "",
           lastSeenAt: toSafeDate(row.lastSeenAt),
           frequency: 1,
           sourceRank: 0,
@@ -207,7 +211,7 @@ export const customerService = {
       if (toSafeDate(row.lastSeenAt).getTime() > existing.lastSeenAt.getTime()) {
         existing.lastSeenAt = toSafeDate(row.lastSeenAt);
       }
-      if (!existing.phone && row.phone.trim()) {
+      if (!existing.phone && row.phone?.trim()) {
         existing.phone = row.phone.trim();
       }
       if (typeof existing.customerId !== "number") {
@@ -303,5 +307,74 @@ export const customerService = {
     }
 
     return top.map(({ isSessionOnly: _isSessionOnly, ...entry }) => entry);
+  },
+
+  async resolveCustomerByPayerName(
+    prisma: unknown,
+    input: { payerName: string },
+  ) {
+    const customerModel = (prisma as { customer?: unknown; customers?: unknown }).customer ??
+      (prisma as { customer?: unknown; customers?: unknown }).customers;
+    if (!customerModel) {
+      return null;
+    }
+
+    const payerName = input.payerName.trim();
+    if (!payerName) {
+      return null;
+    }
+
+    const existing = await (
+      customerModel as {
+        findMany: (args: {
+          where: { name: { equals: string } };
+          orderBy: Array<{ lastSeenAt: "desc" } | { id: "asc" }>;
+          take: number;
+          select: { id: true; name: true; phone: true };
+        }) => Promise<Array<{ id: number; name: string; phone: string | null }>>;
+      }
+    ).findMany({
+      where: { name: { equals: payerName } },
+      orderBy: [{ lastSeenAt: "desc" }, { id: "asc" }],
+      take: 1,
+      select: { id: true, name: true, phone: true },
+    });
+
+    if (existing.length > 0) {
+      const row = existing[0];
+      await (
+        customerModel as {
+          update: (args: {
+            where: { id: number };
+            data: { name: string; lastSeenAt: Date };
+          }) => Promise<unknown>;
+        }
+      ).update({
+        where: { id: row.id },
+        data: {
+          name: payerName,
+          lastSeenAt: new Date(),
+        },
+      });
+      return { id: row.id, name: payerName, phone: row.phone };
+    }
+
+    const created = await (
+      customerModel as {
+        create: (args: {
+          data: { name: string; phone: string | null; lastSeenAt: Date };
+          select: { id: true; name: true; phone: true };
+        }) => Promise<{ id: number; name: string; phone: string | null }>;
+      }
+    ).create({
+      data: {
+        name: payerName,
+        phone: null,
+        lastSeenAt: new Date(),
+      },
+      select: { id: true, name: true, phone: true },
+    });
+
+    return created;
   },
 };

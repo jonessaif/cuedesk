@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { PageHeader } from "@/components/page-header";
 import { isNativeServerSetupAvailable, openNativeServerSetup } from "@/lib/native-server-setup";
 
 type ActiveUser = {
@@ -165,6 +166,13 @@ type TableOption = {
   name: string;
 };
 
+type MetricTrend = {
+  direction: "up" | "down" | "flat";
+  delta: number;
+  deltaPct: number | null;
+  isBetter: boolean;
+};
+
 type SettingsDraft = {
   target: SettingsTarget;
   chartMode: ChartMode;
@@ -315,6 +323,27 @@ function formatRate(value: number | null | undefined, tableName?: string): strin
   return `${formatMoney(safe)}/min`;
 }
 
+function calculateMetricTrend(current: number, previous: number, higherIsBetter: boolean): MetricTrend {
+  const delta = current - previous;
+  if (Math.abs(delta) < 0.0001) {
+    return {
+      direction: "flat",
+      delta: 0,
+      deltaPct: 0,
+      isBetter: false,
+    };
+  }
+  const direction = delta > 0 ? "up" : "down";
+  const deltaPct = Math.abs(previous) < 0.0001 ? null : (delta / previous) * 100;
+  const isBetter = higherIsBetter ? direction === "up" : direction === "down";
+  return {
+    direction,
+    delta,
+    deltaPct,
+    isBetter,
+  };
+}
+
 function hasSessionOverrides(row: LedgerSessionRow): boolean {
   return (
     row.overrideStartTime !== null ||
@@ -457,6 +486,7 @@ export default function ReportsPage() {
   });
 
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
+  const [previousAnalytics, setPreviousAnalytics] = useState<AnalyticsData | null>(null);
   const [error, setError] = useState<string>("");
   const [splitViewSession, setSplitViewSession] = useState<LedgerSessionRow | null>(null);
 
@@ -557,6 +587,39 @@ export default function ReportsPage() {
         throw new Error(analyticsData?.error ?? "Failed to fetch analytics");
       }
 
+      const currentAnalytics = analyticsData?.data ?? null;
+      let previousAnalyticsData: AnalyticsData | null = null;
+
+      if (currentAnalytics?.window?.start && currentAnalytics?.window?.end) {
+        const currentStartMs = new Date(currentAnalytics.window.start).getTime();
+        const currentEndMs = new Date(currentAnalytics.window.end).getTime();
+        const windowDurationMs = currentEndMs - currentStartMs;
+        if (Number.isFinite(windowDurationMs) && windowDurationMs > 0) {
+          const previousStart = new Date(currentStartMs - windowDurationMs);
+          const previousEnd = new Date(currentStartMs);
+          const previousParams = new URLSearchParams({
+            startAt: previousStart.toISOString(),
+            endAt: previousEnd.toISOString(),
+          });
+          if (analyticsTableId !== "all") {
+            previousParams.set("tableId", analyticsTableId);
+          }
+
+          try {
+            const previousRes = await fetch(`/api/reports/analytics?${previousParams.toString()}`, {
+              cache: "no-store",
+              headers: authHeaders(),
+            });
+            const previousData = await readJsonSafe<{ data?: AnalyticsData }>(previousRes);
+            if (previousRes.ok) {
+              previousAnalyticsData = previousData?.data ?? null;
+            }
+          } catch {
+            previousAnalyticsData = null;
+          }
+        }
+      }
+
       setRows(ledgerData?.data ?? []);
       if (ledgerData?.summary) {
         setSummary(ledgerData.summary);
@@ -564,12 +627,14 @@ export default function ReportsPage() {
       if (ledgerData?.window) {
         setWindowInfo(ledgerData.window);
       }
-      setAnalytics(analyticsData?.data ?? null);
+      setAnalytics(currentAnalytics);
+      setPreviousAnalytics(previousAnalyticsData);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to fetch reports";
       setError(message);
       setRows([]);
       setAnalytics(null);
+      setPreviousAnalytics(null);
     }
   }
 
@@ -670,6 +735,66 @@ export default function ReportsPage() {
   const selectedTableOption = tableOptions.find((row) => String(row.id) === analyticsTableId) ?? null;
   const effectiveSettings = analytics?.settings?.effective ?? null;
   const mergeBucketLabels = effectiveSettings?.mergeBuckets?.map((row) => row.label).join(", ") ?? "-";
+  const trendPeriodDays = Math.max(1, Math.round(analyticsWindow.reportDays || 1));
+  const trendPeriodLabel = `${trendPeriodDays} day${trendPeriodDays === 1 ? "" : "s"}`;
+  const previousAnalyticsOverall = previousAnalytics?.overall ?? null;
+  const previousAnalyticsWindow = previousAnalytics?.window ?? null;
+  const currentIdlePerTablePerDayMinutes =
+    analyticsWindow.tableCount > 0 && analyticsWindow.reportDays > 0
+      ? analyticsOverall.totalIdleMinutes / (analyticsWindow.tableCount * analyticsWindow.reportDays)
+      : 0;
+  const previousIdlePerTablePerDayMinutes =
+    previousAnalyticsOverall && previousAnalyticsWindow && previousAnalyticsWindow.tableCount > 0 && previousAnalyticsWindow.reportDays > 0
+      ? previousAnalyticsOverall.totalIdleMinutes / (previousAnalyticsWindow.tableCount * previousAnalyticsWindow.reportDays)
+      : null;
+  const runningTrend = previousAnalyticsOverall
+    ? calculateMetricTrend(analyticsOverall.totalRunningMinutes, previousAnalyticsOverall.totalRunningMinutes, true)
+    : null;
+  const idleTrend = previousIdlePerTablePerDayMinutes !== null
+    ? calculateMetricTrend(currentIdlePerTablePerDayMinutes, previousIdlePerTablePerDayMinutes, false)
+    : null;
+  const utilizationTrend = previousAnalyticsOverall
+    ? calculateMetricTrend(analyticsOverall.utilizationPct, previousAnalyticsOverall.utilizationPct, true)
+    : null;
+  const revenueTrend = previousAnalyticsOverall
+    ? calculateMetricTrend(analyticsOverall.revenue, previousAnalyticsOverall.revenue, true)
+    : null;
+  const dailyAverageTrend = previousAnalyticsOverall
+    ? calculateMetricTrend(analyticsOverall.dailyAverageRevenue, previousAnalyticsOverall.dailyAverageRevenue, true)
+    : null;
+
+  function trendTone(trend: MetricTrend | null): {
+    icon: string;
+    textClass: string;
+    pillClass: string;
+  } {
+    if (!trend || trend.direction === "flat") {
+      return {
+        icon: "→",
+        textClass: "text-slate-600",
+        pillClass: "border border-slate-300 bg-white text-slate-700 shadow-sm",
+      };
+    }
+    if (trend.isBetter) {
+      return {
+        icon: trend.direction === "up" ? "↑" : "↓",
+        textClass: "text-emerald-700",
+        pillClass: "border border-emerald-700 bg-emerald-600 text-white shadow-md",
+      };
+    }
+    return {
+      icon: trend.direction === "up" ? "↑" : "↓",
+      textClass: "text-rose-700",
+      pillClass: "border border-rose-700 bg-rose-600 text-white shadow-md",
+    };
+  }
+
+  function formatTrendPercent(trend: MetricTrend | null): string {
+    if (!trend || trend.deltaPct === null) {
+      return "--";
+    }
+    return `${Math.round(Math.abs(trend.deltaPct) * 10) / 10}%`;
+  }
 
   function getSettingsSource(target: SettingsTarget): ReportChartSettings | null {
     if (!analytics?.settings) {
@@ -929,61 +1054,59 @@ export default function ReportsPage() {
   return (
     <main className={`reports-page min-h-screen bg-slate-100 p-4 sm:p-6 ${darkEnabled ? "theme-dark" : ""}`}>
       <div className="mx-auto max-w-7xl">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-slate-900">Reports</h1>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Link href="/" className="rounded-md bg-slate-200 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-300">
-                Dashboard
-              </Link>
-              {activeUser?.role === "admin" ? (
-                <Link href="/management" className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700">
-                  Management
-                </Link>
-              ) : null}
-              <Link href="/due-report" className="rounded-md bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900">
-                Due Report
-              </Link>
-              <Link href="/bills" className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700">
-                Bills
-              </Link>
-            </div>
-          </div>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            {activeUser ? (
-              <p className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800">
-                {activeUser.name} ({activeUser.role})
-              </p>
-            ) : null}
-            {showNativeServerButton ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (!openNativeServerSetup()) {
-                    setError("Server setup button works in Android app only");
-                  }
-                }}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-              >
-                Server
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={logout}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-            >
-              Logout
-            </button>
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-            >
-              {themeReady ? (isDark ? "Light Theme" : "Dark Theme") : "Theme"}
-            </button>
-          </div>
-        </div>
+        <PageHeader
+          title="Reports"
+          navItems={[
+            {
+              href: "/",
+              label: "Dashboard",
+              className: "rounded-md bg-slate-200 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-300",
+            },
+            ...(activeUser?.role === "admin"
+              ? [{
+                href: "/management",
+                label: "Management",
+                className: "rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700",
+              }]
+              : []),
+            {
+              href: "/due-report",
+              label: "Due Report",
+              className: "rounded-md bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900",
+            },
+            {
+              href: "/bills",
+              label: "Bills",
+              className: "rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700",
+            },
+            {
+              href: "/reports/customers",
+              label: "Customers",
+              className: "rounded-md bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700",
+            },
+            {
+              href: "/reports/daily-closing",
+              label: "Daily Closing",
+              className: "rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-800",
+            },
+            {
+              href: "/reports/expenses",
+              label: "Expenses",
+              className: "rounded-md bg-rose-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-800",
+            },
+          ]}
+          userLabel={activeUser ? `${activeUser.name} (${activeUser.role})` : null}
+          showServerButton={showNativeServerButton}
+          onServerClick={() => {
+            if (!openNativeServerSetup()) {
+              setError("Server setup button works in Android app only");
+            }
+          }}
+          onLogout={logout}
+          onToggleTheme={toggleTheme}
+          themeLabel={themeReady ? (isDark ? "Light Theme" : "Dark Theme") : "Theme"}
+          isDark={isDark}
+        />
 
         {error ? <p className="mb-3 rounded-md bg-red-100 p-2 text-sm text-red-700">{error}</p> : null}
 
@@ -1215,10 +1338,13 @@ export default function ReportsPage() {
                     </select>
                   </label>
                   <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-700">
-                    Effective chart mode: <span className="font-semibold uppercase">{effectiveSettings?.chartMode ?? analyticsRevenueSeries.mode}</span>
+                    Chart:{" "}
+                    <span className="font-semibold">
+                      {(effectiveSettings?.chartMode ?? analyticsRevenueSeries.mode) === "hour" ? "Hourly" : "Daily"}
+                    </span>
                   </div>
                   <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-700">
-                    Include closed bars: <span className="font-semibold">{effectiveSettings?.includeClosed ? "Yes" : "No"}</span>
+                    Show empty hours: <span className="font-semibold">{effectiveSettings?.includeClosed ? "On" : "Off"}</span>
                   </div>
                 </div>
 
@@ -1249,36 +1375,95 @@ export default function ReportsPage() {
                 </p>
                 {selectedTableOption ? <p>Filtered table: <span className="font-semibold text-slate-800">{selectedTableOption.name}</span></p> : null}
                 {analyticsRevenueSeries.mode === "hour" ? (
-                  <p>Merged hour buckets: <span className="font-semibold text-slate-800">{mergeBucketLabels}</span></p>
+                  <p>Merged slots: <span className="font-semibold text-slate-800">{mergeBucketLabels}</span></p>
                 ) : null}
               </div>
 
               <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-                <div className="rounded-md border border-slate-200 bg-white p-2">
-                  <p className="text-[11px] text-slate-500">Total Running Time</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">
-                    {formatDurationMinutes(analyticsOverall.totalRunningMinutes)}
-                  </p>
-                </div>
-                <div className="rounded-md border border-slate-200 bg-white p-2">
-                  <p className="text-[11px] text-slate-500">Total Idle Time</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">
-                    {formatDurationMinutes(analyticsOverall.totalIdleMinutes)}
-                  </p>
-                </div>
-                <div className="rounded-md border border-slate-200 bg-white p-2">
-                  <p className="text-[11px] text-slate-500">Overall Utilization</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">{`${analyticsOverall.utilizationPct}%`}</p>
-                </div>
-                <div className="rounded-md border border-slate-200 bg-white p-2">
-                  <p className="text-[11px] text-slate-500">Table Revenue (Gross)</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">₹{formatMoney(analyticsOverall.revenue)}</p>
-                </div>
-                <div className="rounded-md border border-slate-200 bg-white p-2">
-                  <p className="text-[11px] text-slate-500">Daily Avg Revenue</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">₹{formatMoney(analyticsOverall.dailyAverageRevenue)}</p>
-                  <p className="mt-0.5 text-[10px] text-slate-500">Based on {analyticsWindow.reportDays} day(s)</p>
-                </div>
+                {(() => {
+                  const cards: Array<{
+                    key: string;
+                    label: string;
+                    value: string;
+                    trend: MetricTrend | null;
+                    valueClass: string;
+                    cardClass: string;
+                    note?: string;
+                    previousValue: string | null;
+                  }> = [
+                    {
+                      key: "run-time",
+                      label: "Total Running Time",
+                      value: formatDurationMinutes(analyticsOverall.totalRunningMinutes),
+                      trend: runningTrend,
+                      valueClass: "text-emerald-700",
+                      cardClass: "border-emerald-200 bg-emerald-50/80",
+                      previousValue: previousAnalyticsOverall ? formatDurationMinutes(previousAnalyticsOverall.totalRunningMinutes) : null,
+                    },
+                    {
+                      key: "idle-time",
+                      label: "Avg Idle (per table)",
+                      value: formatDurationMinutes(currentIdlePerTablePerDayMinutes),
+                      trend: idleTrend,
+                      valueClass: "text-amber-700",
+                      cardClass: "border-amber-200 bg-amber-50/80",
+                      note: `Across ${analyticsWindow.tableCount} table(s)`,
+                      previousValue: previousIdlePerTablePerDayMinutes !== null ? formatDurationMinutes(previousIdlePerTablePerDayMinutes) : null,
+                    },
+                    {
+                      key: "utilization",
+                      label: "Overall Utilization",
+                      value: `${analyticsOverall.utilizationPct}%`,
+                      trend: utilizationTrend,
+                      valueClass: "text-sky-900",
+                      cardClass: "border-sky-300 bg-sky-100/90 ring-1 ring-sky-200 shadow-md",
+                      previousValue: previousAnalyticsOverall ? `${previousAnalyticsOverall.utilizationPct}%` : null,
+                    },
+                    {
+                      key: "gross-revenue",
+                      label: "Table Revenue (Gross)",
+                      value: `₹${formatMoney(analyticsOverall.revenue)}`,
+                      trend: revenueTrend,
+                      valueClass: "text-indigo-900",
+                      cardClass: "border-indigo-300 bg-indigo-100/90 ring-1 ring-indigo-200 shadow-md",
+                      previousValue: previousAnalyticsOverall ? `₹${formatMoney(previousAnalyticsOverall.revenue)}` : null,
+                    },
+                    {
+                      key: "daily-average",
+                      label: "Daily Avg Revenue",
+                      value: `₹${formatMoney(analyticsOverall.dailyAverageRevenue)}`,
+                      trend: dailyAverageTrend,
+                      valueClass: "text-indigo-700",
+                      cardClass: "border-indigo-200 bg-indigo-50/80",
+                      note: `Based on ${analyticsWindow.reportDays} day(s)`,
+                      previousValue: previousAnalyticsOverall ? `₹${formatMoney(previousAnalyticsOverall.dailyAverageRevenue)}` : null,
+                    },
+                  ];
+
+                  return cards.map((card) => {
+                    const tone = trendTone(card.trend);
+                    return (
+                      <article key={card.key} className={`rounded-xl border p-3 shadow-sm ${card.cardClass}`}>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">{card.label}</p>
+                        <p className={`mt-2 text-2xl font-bold leading-none ${card.valueClass}`}>{card.value}</p>
+                        <div className="mt-2 flex items-center gap-1.5">
+                          <p className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-bold ${tone.pillClass}`}>
+                            <span aria-hidden>{tone.icon}</span>
+                            <span>{formatTrendPercent(card.trend)}</span>
+                          </p>
+                          <span
+                            className={`inline-flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 bg-white text-[10px] font-semibold ${tone.textClass}`}
+                            title={card.previousValue ? `Previous ${trendPeriodLabel} value: ${card.previousValue}` : "No previous period data"}
+                            aria-label="Trend info"
+                          >
+                            i
+                          </span>
+                        </div>
+                        {card.note ? <p className="mt-1 text-[10px] text-slate-500">{card.note}</p> : null}
+                      </article>
+                    );
+                  });
+                })()}
               </div>
 
               <div className="mt-2 min-w-0 rounded-md border border-slate-200 bg-white p-2">

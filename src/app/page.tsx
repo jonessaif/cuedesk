@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
+import { PageHeader } from "@/components/page-header";
 import { isNativeServerSetupAvailable, openNativeServerSetup } from "@/lib/native-server-setup";
 
 type TableRow = {
@@ -133,6 +134,17 @@ type LedgerWindow = {
   end: string | null;
 };
 
+type DashboardLivePayload = {
+  tables?: TableRow[];
+  unpaid?: UnpaidBill[];
+  completed?: CompletedSessionRow[];
+  all?: {
+    data?: LedgerSessionRow[];
+    summary?: LedgerSummary;
+    window?: LedgerWindow;
+  };
+};
+
 type OverrideHistoryEvent = {
   id: number;
   action: string;
@@ -209,6 +221,38 @@ type SpeechRecognitionLike = {
   stop: () => void;
 };
 
+function emptyLedgerSummary(): LedgerSummary {
+  return {
+    subtotal: 0,
+    net: 0,
+    cash: 0,
+    upi: 0,
+    card: 0,
+    due: 0,
+    dueReceived: 0,
+    dueReceivedCash: 0,
+    dueReceivedUpi: 0,
+    dueReceivedCard: 0,
+    collectionTotal: 0,
+    unpaid: 0,
+    discount: 0,
+    total: 0,
+    paid: 0,
+    isBalanced: true,
+    ltpCount: 0,
+    ltpValue: 0,
+  };
+}
+
+function emptyLedgerWindow(scope: LedgerScope): LedgerWindow {
+  return {
+    scope,
+    key: null,
+    start: null,
+    end: null,
+  };
+}
+
 function formatSplitPercentage(value: number): string {
   const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/\.?0+$/, "");
@@ -234,8 +278,12 @@ function applyEqualSplit(rows: SplitRow[]): SplitRow[] {
   return result;
 }
 
+function normalizeTableState(state: string): string {
+  return state.trim().toLowerCase();
+}
+
 function isRunningState(state: string): boolean {
-  return state.startsWith("Running");
+  return normalizeTableState(state).startsWith("running");
 }
 
 function formatElapsedFromStart(startTime?: string): string {
@@ -262,6 +310,56 @@ function formatElapsedFromStart(startTime?: string): string {
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function elapsedMinutesFromStart(startTime?: string): number | null {
+  if (!startTime) {
+    return null;
+  }
+
+  const start = new Date(startTime);
+  if (Number.isNaN(start.getTime())) {
+    return null;
+  }
+
+  const diffMs = Date.now() - start.getTime();
+  if (diffMs <= 0) {
+    return 0;
+  }
+
+  return Math.floor(diffMs / 60000);
+}
+
+function elapsedColorFromStart(startTime?: string): string {
+  const minutes = elapsedMinutesFromStart(startTime);
+  if (minutes === null) {
+    return "#334155";
+  }
+
+  if (minutes <= 30) {
+    const t = minutes / 30;
+    const hue = 125 - (80 * t);
+    const saturation = 62 - (8 * t);
+    const lightness = 34 + (8 * t);
+    return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  }
+
+  if (minutes <= 60) {
+    const t = (minutes - 30) / 30;
+    const hue = 45 - (45 * t);
+    const saturation = 58 + (20 * t);
+    const lightness = 42 - (6 * t);
+    return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  }
+
+  if (minutes <= 120) {
+    const t = (minutes - 60) / 60;
+    const saturation = 78 + (18 * t);
+    const lightness = 36 - (10 * t);
+    return `hsl(0, ${saturation}%, ${lightness}%)`;
+  }
+
+  return "hsl(0, 98%, 24%)";
 }
 
 function formatTimeHHmm(value: string | null | undefined): string {
@@ -436,22 +534,8 @@ function toSplitRows(data: unknown): SplitRow[] {
   return rows.length >= 2 ? rows : [{ name: "", percentage: "" }, { name: "", percentage: "" }];
 }
 
-function tableStateStripColor(state: string): string {
-  return (
-    {
-      Free: "bg-green-500",
-      "Running-NoPayer": "bg-red-500",
-      "Running-Single": "bg-orange-500",
-      "Running-Split": "bg-purple-500",
-      Completed: "bg-blue-500",
-      "Completed (Unbilled)": "bg-blue-500",
-      Billed: "bg-slate-500",
-    }[state] ?? "bg-gray-500"
-  );
-}
-
 function tableStateLabel(state: string): string {
-  if (state === "Billed") {
+  if (normalizeTableState(state) === "billed") {
     return "Last session billed";
   }
   return state;
@@ -735,32 +819,48 @@ function formatPayer(
   return text || "No payer";
 }
 
+function billingPayerKey(row: CompletedSessionRow): string {
+  const payer = formatPayer(row.payerMode, row.payerData).trim();
+  return payerMatchKey(payer);
+}
+
+function payerMatchKey(payerText: string): string {
+  const payer = payerText.trim().replace(/\s+/g, " ");
+  if (!payer || payer.toLowerCase() === "no payer") {
+    return "";
+  }
+  return payer.toLowerCase();
+}
+
+function suggestedPaymentShortcuts(remainingAmount: number): number[] {
+  const remaining = Math.max(0, Math.round(remainingAmount));
+  if (remaining <= 0) {
+    return [];
+  }
+
+  const tiers: number[] =
+    remaining < 100 ? [20, 50]
+      : remaining < 250 ? [50, 100]
+        : remaining < 600 ? [100, 200]
+          : remaining < 1500 ? [200, 500]
+            : remaining < 3000 ? [500, 1000]
+              : [1000, 2000];
+
+  const filtered = Array.from(new Set(tiers.filter((amount) => amount > 0 && amount < remaining)));
+  if (filtered.length > 0) {
+    return filtered;
+  }
+
+  const fallback = Math.max(10, Math.floor(remaining / 2 / 10) * 10);
+  return fallback > 0 && fallback < remaining ? [fallback] : [];
+}
+
 function formatLedgerAmountWithDiscount(row: LedgerSessionRow): string {
   const discount = typeof row.sessionDiscount === "number" ? row.sessionDiscount : 0;
   if (discount <= 0) {
     return `₹${formatMoney(row.amount)}`;
   }
   return `₹${formatMoney(row.amount)} (-₹${formatMoney(discount)}) = ₹${formatMoney(row.finalAmount)}`;
-}
-
-function payerDisplayText(table: TableRow): string {
-  if (!isRunningState(table.state)) {
-    return "";
-  }
-
-  if (table.state === "Running-NoPayer") {
-    return "No payer assigned";
-  }
-
-  if (table.state === "Running-Single") {
-    return `Payer: ${formatPayer("single", table.currentSession?.payerData)}`;
-  }
-
-  if (table.state === "Running-Split") {
-    return `Split: ${formatPayer("split", table.currentSession?.payerData)}`;
-  }
-
-  return "";
 }
 
 function getTableSection(name: string): string {
@@ -840,36 +940,12 @@ export default function HomePage() {
   const [billingBusy, setBillingBusy] = useState(false);
   const [billingError, setBillingError] = useState<string | null>(null);
   const [sessionsLedger, setSessionsLedger] = useState<LedgerSessionRow[]>([]);
-  const [ledgerSummary, setLedgerSummary] = useState<LedgerSummary>({
-    subtotal: 0,
-    net: 0,
-    cash: 0,
-    upi: 0,
-    card: 0,
-    due: 0,
-    dueReceived: 0,
-    dueReceivedCash: 0,
-    dueReceivedUpi: 0,
-    dueReceivedCard: 0,
-    collectionTotal: 0,
-    unpaid: 0,
-    discount: 0,
-    total: 0,
-    paid: 0,
-    isBalanced: true,
-    ltpCount: 0,
-    ltpValue: 0,
-  });
+  const [ledgerSummary, setLedgerSummary] = useState<LedgerSummary>(emptyLedgerSummary());
   const [ledgerScope, setLedgerScope] = useState<LedgerScope>("current");
   const [ledgerDate, setLedgerDate] = useState<string>(todayDateInputValue());
   const [ledgerStartDate, setLedgerStartDate] = useState<string>(todayDateInputValue());
   const [ledgerEndDate, setLedgerEndDate] = useState<string>(todayDateInputValue());
-  const [ledgerWindow, setLedgerWindow] = useState<LedgerWindow>({
-    scope: "current",
-    key: null,
-    start: null,
-    end: null,
-  });
+  const [ledgerWindow, setLedgerWindow] = useState<LedgerWindow>(emptyLedgerWindow("current"));
   const [unpaidBills, setUnpaidBills] = useState<UnpaidBill[]>([]);
   const [selectedBillId, setSelectedBillId] = useState<number | null>(null);
   const [billDiscountType, setBillDiscountType] = useState<"none" | "fixed" | "percent">(
@@ -878,6 +954,8 @@ export default function HomePage() {
   const [billDiscountValue, setBillDiscountValue] = useState("");
   const [discountDraftBillId, setDiscountDraftBillId] = useState<number | null>(null);
   const [discountBusy, setDiscountBusy] = useState(false);
+  const [paymentDiscountOpen, setPaymentDiscountOpen] = useState(false);
+  const [paymentSummaryOpen, setPaymentSummaryOpen] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("cash");
   const [dueCustomerName, setDueCustomerName] = useState("");
@@ -932,6 +1010,7 @@ export default function HomePage() {
     { name: "", percentage: "" },
   ]);
   const [overrideBusy, setOverrideBusy] = useState(false);
+  const dashboardLiveSnapshotRef = useRef<string>("");
   const isAdminUser = activeUser?.role === "admin";
   const canManage = isAdminUser;
   const showNativeServerButton = themeReady && isNativeServerSetupAvailable();
@@ -1516,16 +1595,21 @@ export default function HomePage() {
     }
   }, []);
 
+  function buildLedgerQuery(scope: LedgerScope = ledgerScope): URLSearchParams {
+    const params = new URLSearchParams({ scope });
+    if (scope === "day" && ledgerDate) {
+      params.set("date", ledgerDate);
+    }
+    if (scope === "range") {
+      params.set("startDate", ledgerStartDate);
+      params.set("endDate", ledgerEndDate);
+    }
+    return params;
+  }
+
   async function loadAllSessions(scope: LedgerScope = ledgerScope) {
     try {
-      const params = new URLSearchParams({ scope });
-      if (scope === "day" && ledgerDate) {
-        params.set("date", ledgerDate);
-      }
-      if (scope === "range") {
-        params.set("startDate", ledgerStartDate);
-        params.set("endDate", ledgerEndDate);
-      }
+      const params = buildLedgerQuery(scope);
       const res = await fetch(`/api/sessions/all?${params.toString()}`, { cache: "no-store", headers: authHeaders() });
       const data = await readJsonSafe<{
         data?: LedgerSessionRow[];
@@ -1538,63 +1622,66 @@ export default function HomePage() {
       }
       setSessionsLedger(data?.data ?? []);
       setLedgerSummary(
-        data?.summary ?? {
-          subtotal: 0,
-          net: 0,
-          cash: 0,
-          upi: 0,
-          card: 0,
-          due: 0,
-          dueReceived: 0,
-          dueReceivedCash: 0,
-          dueReceivedUpi: 0,
-          dueReceivedCard: 0,
-          collectionTotal: 0,
-          unpaid: 0,
-          discount: 0,
-          total: 0,
-          paid: 0,
-          isBalanced: true,
-          ltpCount: 0,
-          ltpValue: 0,
-        },
+        data?.summary ?? emptyLedgerSummary(),
       );
       setLedgerWindow(
-        data?.window ?? {
-          scope,
-          key: null,
-          start: null,
-          end: null,
-        },
+        data?.window ?? emptyLedgerWindow(scope),
       );
     } catch {
       setSessionsLedger([]);
-      setLedgerSummary({
-        subtotal: 0,
-        net: 0,
-        cash: 0,
-        upi: 0,
-        card: 0,
-        due: 0,
-        dueReceived: 0,
-        dueReceivedCash: 0,
-        dueReceivedUpi: 0,
-        dueReceivedCard: 0,
-        collectionTotal: 0,
-        unpaid: 0,
-        discount: 0,
-        total: 0,
-        paid: 0,
-        isBalanced: true,
-        ltpCount: 0,
-        ltpValue: 0,
+      setLedgerSummary(emptyLedgerSummary());
+      setLedgerWindow(emptyLedgerWindow(scope));
+    }
+  }
+
+  async function loadDashboardLive(scope: LedgerScope = ledgerScope) {
+    try {
+      setError(null);
+      const params = buildLedgerQuery(scope);
+      const res = await fetch(`/api/dashboard-live?${params.toString()}`, {
+        cache: "no-store",
+        headers: authHeaders(),
       });
-      setLedgerWindow({
-        scope,
-        key: null,
-        start: null,
-        end: null,
+      const response = await readJsonSafe<{ data?: DashboardLivePayload; error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(response?.error ?? "Failed to fetch dashboard data");
+      }
+
+      const payload = response?.data;
+      const tablesRows = payload?.tables ?? [];
+      const completedRows = [...(payload?.completed ?? [])].sort((a, b) => b.id - a.id);
+      const unpaidRows = payload?.unpaid ?? [];
+      const ledgerRows = payload?.all?.data ?? [];
+      const nextSummary = payload?.all?.summary ?? emptyLedgerSummary();
+      const nextWindow = payload?.all?.window ?? emptyLedgerWindow(scope);
+
+      const snapshot = JSON.stringify({
+        tables: tablesRows,
+        completed: completedRows,
+        unpaid: unpaidRows,
+        ledgerRows,
+        summary: nextSummary,
+        window: nextWindow,
       });
+      if (dashboardLiveSnapshotRef.current === snapshot) {
+        setLoading(false);
+        return;
+      }
+      dashboardLiveSnapshotRef.current = snapshot;
+
+      setTables(tablesRows);
+      setCompletedSessions(completedRows);
+      setSelectedSessionIds((prev) => prev.filter((id) => completedRows.some((row) => row.id === id)));
+      setUnpaidBills(unpaidRows);
+      setSelectedBillId((prev) => (prev !== null && unpaidRows.some((bill) => bill.id === prev) ? prev : null));
+      setSessionsLedger(ledgerRows);
+      setLedgerSummary(nextSummary);
+      setLedgerWindow(nextWindow);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to fetch dashboard data";
+      setError(message);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -1638,36 +1725,27 @@ export default function HomePage() {
     if (!activeUserId) {
       return;
     }
-    void loadTables();
-    void loadCompletedSessions();
-    void loadUnpaidBills();
-    void loadAllSessions(ledgerScope);
-    void loadDueReport();
-    void loadDueReportByBill();
-    void loadBillSearch();
-    const poll = setInterval(() => {
-      void loadTables();
-      void loadCompletedSessions();
-      void loadUnpaidBills();
-      void loadAllSessions(ledgerScope);
-      void loadDueReport();
-      void loadDueReportByBill();
-      void loadBillSearch();
-    }, 5000);
-    return () => clearInterval(poll);
+    void loadDashboardLive(ledgerScope);
+
+    let poll: ReturnType<typeof setInterval> | null = null;
+    const staggerTimer = setTimeout(() => {
+      poll = setInterval(() => {
+        void loadDashboardLive(ledgerScope);
+      }, 8000);
+    }, Math.floor(Math.random() * 3000));
+
+    return () => {
+      clearTimeout(staggerTimer);
+      if (poll) {
+        clearInterval(poll);
+      }
+    };
   }, [
     activeUserId,
     ledgerScope,
     ledgerDate,
     ledgerStartDate,
     ledgerEndDate,
-    billFilterStartDate,
-    billFilterEndDate,
-    billFilterStartTime,
-    billFilterEndTime,
-    billFilterId,
-    billFilterPayer,
-    billFilterPaymentMode,
   ]);
 
   useEffect(() => {
@@ -2044,10 +2122,56 @@ export default function HomePage() {
       .filter((row) => selectedSessionIds.includes(row.id))
       .reduce((sum, row) => sum + row.amount, 0);
   }, [completedSessions, selectedSessionIds]);
+  const selectedBillingPayerKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const row of completedSessions) {
+      if (!selectedSessionIds.includes(row.id)) {
+        continue;
+      }
+      const key = billingPayerKey(row);
+      if (key) {
+        keys.add(key);
+      }
+    }
+    return keys;
+  }, [completedSessions, selectedSessionIds]);
+  const runningSessionPayers = useMemo(() => {
+    const payerMap = new Map<string, string>();
+    for (const table of tables) {
+      if (!isRunningState(table.state)) {
+        continue;
+      }
+      const payerText = formatPayer(table.currentSession?.payerMode, table.currentSession?.payerData).trim();
+      const key = payerMatchKey(payerText);
+      if (!key) {
+        continue;
+      }
+      if (!payerMap.has(key)) {
+        payerMap.set(key, payerText);
+      }
+    }
+    return payerMap;
+  }, [tables]);
+  const billingRunningPayerConflicts = useMemo(() => {
+    const names: string[] = [];
+    for (const key of selectedBillingPayerKeys) {
+      const payer = runningSessionPayers.get(key);
+      if (payer) {
+        names.push(payer);
+      }
+    }
+    return names;
+  }, [selectedBillingPayerKeys, runningSessionPayers]);
   const selectedBill = useMemo(
     () => unpaidBills.find((bill) => bill.id === selectedBillId) ?? null,
     [unpaidBills, selectedBillId],
   );
+  const paymentShortcutAmounts = useMemo(
+    () => (selectedBill ? suggestedPaymentShortcuts(selectedBill.remainingAmount) : []),
+    [selectedBill?.remainingAmount, selectedBillId],
+  );
+  const showBillingPanel = completedSessions.length > 0;
+  const showPaymentPanel = unpaidBills.length > 0;
   const sortedLedgerRows = useMemo(() => {
     const stateOrder: Record<LedgerSessionRow["state"], number> = {
       Running: 0,
@@ -2080,6 +2204,124 @@ export default function HomePage() {
       return b.id - a.id;
     });
   }, [sessionsLedger]);
+  const snookerRows = useMemo(
+    () => tableSections.find((section) => section.title === "Snooker")?.rows ?? [],
+    [tableSections],
+  );
+  const poolRows = useMemo(
+    () => tableSections.find((section) => section.title === "Pool Tables")?.rows ?? [],
+    [tableSections],
+  );
+  const playStationRows = useMemo(
+    () => tableSections.find((section) => section.title === "PlayStation")?.rows ?? [],
+    [tableSections],
+  );
+  const extraTableSections = useMemo(
+    () => tableSections.filter(
+      (section) => section.title !== "Snooker"
+        && section.title !== "Pool Tables"
+        && section.title !== "PlayStation",
+    ),
+    [tableSections],
+  );
+
+  function renderTableCard(table: TableRow) {
+    const truncateToTen = (value: string) => (value.length > 10 ? `${value.slice(0, 10)}...` : value);
+    const running = isRunningState(table.state);
+    const isFree = !running;
+    const normalizedState = normalizeTableState(table.state);
+    const isRunningNoPayer = normalizedState === "running-nopayer";
+    const startedAt = formatTime12h(table.currentSession?.startTime);
+    const elapsed = formatElapsedFromStart(table.currentSession?.startTime);
+    const elapsedMinutes = elapsedMinutesFromStart(table.currentSession?.startTime);
+    const isOverTwoHours = (elapsedMinutes ?? 0) >= 120;
+    const elapsedColor = elapsedColorFromStart(table.currentSession?.startTime);
+    const playerLabel = (table.currentSession?.playerName ?? "").trim() || "-";
+    const payerLabel = formatPayer(table.currentSession?.payerMode, table.currentSession?.payerData);
+    const hasPayer = payerLabel.trim().toLowerCase() !== "no payer";
+    const payerDisplay = hasPayer ? payerLabel : "⚠ NO PAYER";
+    const playerDisplay = truncateToTen(playerLabel);
+    const payerCompactDisplay = truncateToTen(payerDisplay);
+
+    if (isFree) {
+      return (
+        <button
+          type="button"
+          key={table.id}
+          onClick={() => openStartSession(table)}
+          disabled={busyTableId === table.id}
+          className="overflow-hidden rounded-xl border border-emerald-200 bg-emerald-100 p-4 shadow-sm flex min-h-[136px] w-full flex-col items-center justify-center text-center transition hover:bg-emerald-200 hover:shadow-md disabled:opacity-50"
+        >
+          <h3 className="text-2xl font-semibold text-emerald-900">{table.name}</h3>
+          <p className="mt-1 text-xs text-emerald-700">
+            Rate: {formatRate(table.ratePerMin, table.name)}
+          </p>
+        </button>
+      );
+    }
+
+    return (
+      <article
+        key={table.id}
+        className={`overflow-hidden rounded-xl border p-4 shadow-sm transition hover:shadow-md ${
+          isRunningNoPayer ? "border-orange-100 bg-orange-50/70" : "border-sky-100 bg-sky-50/70"
+        } ${isOverTwoHours ? "border-red-300 shadow-[0_0_30px_rgba(220,38,38,0.45)]" : ""}`}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex items-baseline gap-2">
+            <h3 className="text-lg font-semibold text-slate-900">{table.name}</h3>
+            <p className="text-xs text-slate-700">
+              Rate: {formatRate(table.ratePerMin, table.name)}
+            </p>
+          </div>
+          <div className="min-w-0 text-right">
+            <div className="flex items-center justify-end gap-1">
+              <p
+                title={playerLabel}
+                className="max-w-[120px] truncate text-xl font-bold leading-tight text-slate-900"
+              >
+                {playerDisplay}
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="mt-0.5 flex items-center justify-between gap-2">
+          <span className="text-[10px] text-slate-500">
+            Started {startedAt}
+          </span>
+          <p
+            title={payerDisplay}
+            className={`ml-auto max-w-[120px] truncate text-xs font-semibold ${hasPayer ? "text-slate-700" : "rounded-md border border-red-300 bg-red-200 px-2 py-0.5 font-extrabold tracking-wide text-red-800"}`}
+          >
+            {payerCompactDisplay}
+          </p>
+        </div>
+        <p className="mt-0.5 text-base font-semibold" style={{ color: elapsedColor }}>
+          ⏱ {elapsed}
+        </p>
+        <div className="mt-2 grid w-full grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => openEndSession(table)}
+            disabled={busyTableId === table.id}
+            className="w-full whitespace-nowrap rounded-md bg-red-600 px-2 py-2 text-xs font-semibold text-white hover:bg-red-700 sm:px-3 sm:text-sm"
+          >
+            End Session
+          </button>
+          <button
+            type="button"
+            onClick={() => openAssignPayer(table)}
+            disabled={busyTableId === table.id}
+            className={`w-full whitespace-nowrap rounded-md px-2 py-2 text-xs font-semibold text-white sm:px-3 sm:text-sm ${
+              isRunningNoPayer ? "bg-orange-400 shadow-md shadow-orange-200 hover:bg-orange-500" : "bg-blue-600 hover:bg-blue-700"
+            }`}
+          >
+            {isRunningNoPayer ? "Assign Payer" : "Update Payer"}
+          </button>
+        </div>
+      </article>
+    );
+  }
 
   useEffect(() => {
     if (selectedBillId === null) {
@@ -2109,18 +2351,85 @@ export default function HomePage() {
     setDiscountDraftBillId(selectedBillId);
   }, [selectedBillId, unpaidBills, discountDraftBillId]);
 
+  useEffect(() => {
+    setPaymentDiscountOpen(false);
+    setPaymentSummaryOpen(false);
+  }, [selectedBillId]);
+
+  useEffect(() => {
+    if (!selectedBill) {
+      setPaymentAmount("");
+      return;
+    }
+    setPaymentAmount(String(selectedBill.remainingAmount));
+  }, [selectedBillId, selectedBill?.remainingAmount]);
+
   function toggleSessionSelection(sessionId: number) {
     setSelectedSessionIds((prev) =>
       prev.includes(sessionId) ? prev.filter((id) => id !== sessionId) : [...prev, sessionId],
     );
   }
 
-  async function createBill() {
+  function printBillSlip(input: {
+    billId: number;
+    payerText: string;
+    sessionCount: number;
+    total: number;
+    paid: number;
+    due: number;
+  }): boolean {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    const popup = window.open("", "_blank", "width=420,height=640");
+    if (!popup) {
+      setBillingError("Popup blocked. Please allow popups to print.");
+      return false;
+    }
+    popup.document.write(`
+      <html>
+      <head>
+        <title>Bill #${input.billId}</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; padding: 16px; color: #0f172a; }
+          h1 { font-size: 18px; margin: 0 0 10px; }
+          p { margin: 4px 0; font-size: 13px; }
+          .line { border-top: 1px dashed #94a3b8; margin: 10px 0; }
+          .big { font-size: 16px; font-weight: 700; }
+        </style>
+      </head>
+      <body>
+        <h1>Bill #${input.billId}</h1>
+        <p>Payer: ${input.payerText}</p>
+        <p>Sessions: ${input.sessionCount}</p>
+        <div class="line"></div>
+        <p>Total: ₹${formatMoney(input.total)}</p>
+        <p>Paid: ₹${formatMoney(input.paid)}</p>
+        <p>Due: ₹${formatMoney(input.due)}</p>
+        <p class="big">Status: ${input.due <= 0 ? "Paid" : input.paid <= 0 ? "Due" : "Partial"}</p>
+      </body>
+      </html>
+    `);
+    popup.document.close();
+    popup.focus();
+    popup.print();
+    return true;
+  }
+
+  async function createBill(shouldPrint = false) {
     if (selectedSessionIds.length === 0) {
       return;
     }
 
     const ids = Array.from(new Set(selectedSessionIds));
+    const selectedRows = completedSessions.filter((row) => ids.includes(row.id));
+    const payerText = Array.from(
+      new Set(
+        selectedRows
+          .map((row) => formatPayer(row.payerMode, row.payerData).trim())
+          .filter((payer) => payer && payer.toLowerCase() !== "no payer"),
+      ),
+    ).join(", ") || "-";
     setBillingBusy(true);
     setBillingError(null);
     try {
@@ -2131,19 +2440,41 @@ export default function HomePage() {
           sessionIds: ids,
         }),
       });
-      const data = await readJsonSafe<{ error?: string }>(res);
+      const data = await readJsonSafe<{
+        id?: number;
+        finalAmount?: number;
+        paidAmount?: number;
+        remainingAmount?: number;
+        error?: string;
+      }>(res);
 
       if (!res.ok) {
         setBillingError(data?.error ?? "Failed to create bill");
         return;
       }
 
+      const printOpened = shouldPrint && typeof data?.id === "number"
+        ? printBillSlip({
+          billId: data.id,
+          payerText,
+          sessionCount: selectedRows.length,
+          total: data.finalAmount ?? selectedTotalAmount,
+          paid: data.paidAmount ?? 0,
+          due: data.remainingAmount ?? (data.finalAmount ?? selectedTotalAmount),
+        })
+        : false;
+
       setSelectedSessionIds([]);
       await loadCompletedSessions();
       await loadTables();
       await loadUnpaidBills();
       await loadAllSessions();
-      pushToast("success", "Bill created successfully");
+      pushToast(
+        "success",
+        shouldPrint
+          ? (printOpened ? "Bill created and print opened" : "Bill created successfully")
+          : "Bill created successfully",
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create bill";
       setBillingError(message);
@@ -2815,73 +3146,45 @@ export default function HomePage() {
         </div>
       ) : null}
       <div className="mx-auto max-w-7xl">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-slate-900">CueDesk Dashboard</h1>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {canManage ? (
-                <Link
-                  href="/management"
-                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-                >
-                  Management
-                </Link>
-              ) : null}
-              <Link
-                href="/reports"
-                className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
-              >
-                Reports
-              </Link>
-              <Link
-                href="/due-report"
-                className="rounded-md bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900"
-              >
-                Due Report
-              </Link>
-              <Link
-                href="/bills"
-                className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
-              >
-                Bills
-              </Link>
-            </div>
-          </div>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            {activeUser ? (
-              <p className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800">
-                {activeUser.name} ({activeUser.role})
-              </p>
-            ) : null}
-            {showNativeServerButton ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (!openNativeServerSetup()) {
-                    pushToast("info", "Server setup is available in the Android app");
-                  }
-                }}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-              >
-                Server
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={logout}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-            >
-              Logout
-            </button>
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
-            >
-              {isDark ? "Light Theme" : "Dark Theme"}
-            </button>
-          </div>
-        </div>
+        <PageHeader
+          title="CueDesk Dashboard"
+          navItems={[
+            ...(canManage
+              ? [{
+                href: "/management",
+                label: "Management",
+                className:
+                  "rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100",
+              }]
+              : []),
+            {
+              href: "/reports",
+              label: "Reports",
+              className: "rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700",
+            },
+            {
+              href: "/due-report",
+              label: "Due Report",
+              className: "rounded-md bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900",
+            },
+            {
+              href: "/bills",
+              label: "Bills",
+              className: "rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700",
+            },
+          ]}
+          userLabel={activeUser ? `${activeUser.name} (${activeUser.role})` : null}
+          showServerButton={showNativeServerButton}
+          onServerClick={() => {
+            if (!openNativeServerSetup()) {
+              pushToast("info", "Server setup is available in the Android app");
+            }
+          }}
+          onLogout={logout}
+          onToggleTheme={toggleTheme}
+          themeLabel={isDark ? "Light Theme" : "Dark Theme"}
+          isDark={isDark}
+        />
 
         {showManagement && canManage ? (
           <section className="mb-4 rounded-xl border border-slate-300 bg-white p-4 shadow-md">
@@ -3027,248 +3330,111 @@ export default function HomePage() {
 
         {loading ? <p className="text-slate-600">Loading tables...</p> : null}
 
-        <div className="flex flex-col gap-6 lg:flex-row">
-          <section className="flex-1">
-            <section className="rounded-xl border border-slate-300 bg-white p-4 shadow-md">
-              <h2 className="mb-4 text-lg font-semibold text-slate-900">Tables</h2>
-              <div className="space-y-4">
-                {tableSections.map((section) => (
-                  <section key={section.title} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <h3 className="mb-3 text-base font-semibold text-slate-900">{section.title}</h3>
-                    <div
-                      className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${
-                        (section.title === "Pool Tables" || section.title === "PlayStation") &&
-                          section.rows.length === 2
-                          ? "lg:mx-auto lg:max-w-[66.666667%] lg:grid-cols-2"
-                          : "lg:grid-cols-3"
-                      }`}
-                    >
-                      {section.rows.map((table) => {
-                        const running = isRunningState(table.state);
-                        const startedAt = formatTime12h(table.currentSession?.startTime);
-                        const elapsed = formatElapsedFromStart(table.currentSession?.startTime);
-                        const payerText = payerDisplayText(table);
-                        const statusText = tableStateLabel(table.state);
-                        const canStartSession = !running;
-
-                        return (
-                          <article
-                            key={table.id}
-                            className="overflow-hidden rounded-xl border border-slate-300 bg-white p-5 shadow-md transition hover:shadow-lg"
-                          >
-                            <div
-                              className={`-mt-5 mb-4 h-1.5 w-full ${tableStateStripColor(table.state)}`}
-                            />
-                            <h3 className="text-lg font-semibold text-slate-900">{table.name}</h3>
-                            <p className="mt-1 text-sm text-slate-700">
-                              Rate: {formatRate(table.ratePerMin, table.name)}
-                            </p>
-                            <p className="mt-1 text-sm font-medium text-slate-900">Status: {statusText}</p>
-
-                            {running ? (
-                              <>
-                                <p className="mt-2 text-sm text-slate-800">
-                                  Player: {table.currentSession?.playerName ?? "-"}
-                                </p>
-                                <p className="mt-1 text-sm text-slate-800">
-                                  Started {startedAt} • {elapsed} elapsed
-                                </p>
-                                <p className="mt-1 text-sm text-slate-800">{payerText}</p>
-                                <div className="mt-3 flex gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => openEndSession(table)}
-                                    disabled={busyTableId === table.id}
-                                    className="rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700"
-                                  >
-                                    End Session
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => openAssignPayer(table)}
-                                    disabled={busyTableId === table.id}
-                                    className="rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-900"
-                                  >
-                                    Assign Payer
-                                  </button>
-                                </div>
-                              </>
-                            ) : canStartSession ? (
-                              <button
-                                type="button"
-                                onClick={() => openStartSession(table)}
-                                disabled={busyTableId === table.id}
-                                className="mt-3 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-                              >
-                                Start Session
-                              </button>
-                            ) : null}
-
-                            {table.state === "Billed" ? (
-                              <p className="mt-2 text-xs font-medium text-slate-600">Last session billed</p>
-                            ) : null}
-                            {table.state === "Free" ? (
-                              <p className="mt-2 text-xs font-medium text-slate-600">Table is available</p>
-                            ) : null}
-                          </article>
-                        );
-                      })}
-                      {section.rows.length === 0 ? (
-                        <p className="text-sm text-slate-500">No tables in this section.</p>
-                      ) : null}
-                    </div>
-                  </section>
-                ))}
-              </div>
-            </section>
-
-            <section className="mt-6 rounded-xl border border-slate-300 bg-white p-4 shadow-md">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-lg font-semibold text-slate-900">Session Ledger (Current)</h2>
-                <Link
-                  href="/reports"
-                  className="rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900"
+        <div className="space-y-6">
+          <section
+            className={`rounded-xl border p-4 shadow-sm ${
+              isDark
+                ? "border-slate-700 bg-slate-900/80"
+                : "border-slate-200 bg-white"
+            }`}
+          >
+            <h2 className="mb-4 text-lg font-semibold text-slate-900">Tables</h2>
+            <div className="space-y-4">
+              {snookerRows.length > 0 ? (
+                <section
+                  className={`rounded-xl border p-4 ${
+                    isDark
+                      ? "border-slate-700 bg-slate-800/60"
+                      : "border-slate-100 bg-slate-50/60"
+                  }`}
                 >
-                  Open Reports
-                </Link>
-              </div>
-              <p className="mt-1 text-[11px] text-slate-600">
-                Business day: {formatDateTimeFull(ledgerWindow.start)} to {formatDateTimeFull(ledgerWindow.end)}
-              </p>
-              <p className="mt-1 text-xs text-slate-600">
-                <span className="mr-1 inline-block h-2 w-2 rounded-full bg-indigo-500 align-middle" />
-                Rows with overrides are marked.
-              </p>
-              <div className="mt-3 max-h-[420px] overflow-auto">
-                <table className="min-w-full text-left text-xs">
-                  <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700">
-                    <tr>
-                      <th className="px-2 py-2">Bill</th>
-                      <th className="px-2 py-2">Table</th>
-                      <th className="px-2 py-2">Player</th>
-                      <th className="px-2 py-2">Date</th>
-                      <th className="px-2 py-2">Start</th>
-                      <th className="px-2 py-2">End</th>
-                      <th className="px-2 py-2">Duration</th>
-                      <th className="px-2 py-2">Rate</th>
-                      <th className="px-2 py-2">Amount</th>
-                      <th className="px-2 py-2">Paid</th>
-                      <th className="px-2 py-2">Status</th>
-                      <th className="px-2 py-2">Mode</th>
-                      <th className="px-2 py-2">Payer</th>
-                      <th className="px-2 py-2">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedLedgerRows.map((row, index) => {
-                      const modeText = row.paymentModes?.length
-                        ? row.paymentModes.join(", ")
-                        : "-";
-                      const overridden = hasSessionOverrides(row);
-                      const prev = index > 0 ? sortedLedgerRows[index - 1] : null;
-                      const groupDivider = prev && prev.billId !== row.billId
-                        ? "border-t-4 border-slate-300"
-                        : "";
+                  <h3 className="mb-3 text-base font-semibold text-slate-900">Snooker</h3>
+                  <div
+                    className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${
+                      snookerRows.length >= 4
+                        ? "lg:grid-cols-4"
+                        : "lg:mx-auto lg:max-w-[58rem] lg:grid-cols-3"
+                    }`}
+                  >
+                    {snookerRows.map((table) => renderTableCard(table))}
+                  </div>
+                </section>
+              ) : null}
 
-                      return (
-                      <tr
-                        key={row.id}
-                        className={`${ledgerRowColor(row.state)} ${groupDivider} ${
-                          overridden ? "ring-1 ring-inset ring-indigo-200" : ""
-                        }`}
-                      >
-                        <td className="px-2 py-2">
-                          {row.billId ? `Bill #${row.billId}` : "-"}
-                          {overridden ? (
-                            <span className="ml-1 inline-block h-2 w-2 rounded-full bg-indigo-500" />
-                          ) : null}
-                        </td>
-                        <td className="px-2 py-2">{row.tableName}</td>
-                        <td className="px-2 py-2">{row.playerName}</td>
-                        <td className="px-2 py-2">{row.businessDayKey ?? "-"}</td>
-                        <td className="px-2 py-2">{formatTime12h(row.startTime)}</td>
-                        <td className="px-2 py-2">{formatTime12h(row.endTime)}</td>
-                        <td className="px-2 py-2">{row.durationMinutes} min</td>
-                        <td className="px-2 py-2">{formatRate(row.ratePerMin, row.tableName)}</td>
-                        <td className="px-2 py-2">{formatLedgerAmountWithDiscount(row)}</td>
-                        <td className="px-2 py-2">{formatMoney(row.effectivePaid)}</td>
-                        <td className="px-2 py-2">{ledgerStatusText(row.state)}</td>
-                        <td className="px-2 py-2">
-                          <span>{modeText}</span>
-                          {row.paymentSplit.length > 1 ? (
-                            <button
-                              type="button"
-                              onClick={() => setSplitViewSession(row)}
-                              title="View split"
-                              aria-label="View split"
-                              className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                className="h-3.5 w-3.5"
-                              >
-                                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
-                                <circle cx="12" cy="12" r="3" />
-                              </svg>
-                            </button>
-                          ) : null}
-                        </td>
-                        <td className="px-2 py-2">{formatPayer(row.payerMode, row.payerData)}</td>
-                        <td className="px-2 py-2">
-                          <button
-                            type="button"
-                            onClick={() => void openHistoryModal(row)}
-                            className="mr-2 rounded-md bg-indigo-100 px-2 py-1 text-[11px] font-medium text-indigo-800 hover:bg-indigo-200"
-                          >
-                            History
-                          </button>
-                          {row.state !== "Cancelled" ? (
-                            <button
-                              type="button"
-                              onClick={() => openOverrideModal(row)}
-                              className="mr-2 rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-white hover:bg-slate-900"
-                            >
-                              Edit
-                            </button>
-                          ) : null}
-                          {(row.state === "Running" || row.state === "Completed") ? (
-                            <button
-                              type="button"
-                              onClick={() => openCancelSessionModal(row)}
-                              className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700"
-                            >
-                              Cancel
-                            </button>
-                          ) : null}
-                        </td>
-                      </tr>
-                      );
-                    })}
-                    {sortedLedgerRows.length === 0 ? (
-                      <tr>
-                        <td className="px-2 py-3 text-slate-500" colSpan={14}>
-                          No sessions in ledger
-                        </td>
-                      </tr>
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <section
+                  className={`rounded-xl border p-4 ${
+                    isDark
+                      ? "border-slate-700 bg-slate-800/60"
+                      : "border-slate-100 bg-slate-50/60"
+                  }`}
+                >
+                  <h3 className="mb-3 text-base font-semibold text-slate-900">Pool Tables</h3>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {poolRows.map((table) => renderTableCard(table))}
+                    {poolRows.length === 0 ? (
+                      <p className={`text-sm ${isDark ? "text-slate-300" : "text-slate-500"}`}>No tables in this section.</p>
                     ) : null}
-                  </tbody>
-                </table>
+                  </div>
+                </section>
+
+                <section
+                  className={`rounded-xl border p-4 ${
+                    isDark
+                      ? "border-slate-700 bg-slate-800/60"
+                      : "border-slate-100 bg-slate-50/60"
+                  }`}
+                >
+                  <h3 className="mb-3 text-base font-semibold text-slate-900">PlayStation</h3>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {playStationRows.map((table) => renderTableCard(table))}
+                    {playStationRows.length === 0 ? (
+                      <p className={`text-sm ${isDark ? "text-slate-300" : "text-slate-500"}`}>No tables in this section.</p>
+                    ) : null}
+                  </div>
+                </section>
               </div>
-            </section>
+
+              {extraTableSections.map((section) => (
+                <section
+                  key={section.title}
+                  className={`rounded-xl border p-4 ${
+                    isDark
+                      ? "border-slate-700 bg-slate-800/60"
+                      : "border-slate-100 bg-slate-50/60"
+                  }`}
+                >
+                  <h3 className="mb-3 text-base font-semibold text-slate-900">{section.title}</h3>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {section.rows.map((table) => renderTableCard(table))}
+                    {section.rows.length === 0 ? (
+                      <p className={`text-sm ${isDark ? "text-slate-300" : "text-slate-500"}`}>No tables in this section.</p>
+                    ) : null}
+                  </div>
+                </section>
+              ))}
+            </div>
           </section>
 
-          <aside className="w-full space-y-6 lg:w-[350px]">
-            <section className="flex max-h-[480px] flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-md">
+          {showBillingPanel || showPaymentPanel ? (
+            <div
+              className={`grid grid-cols-1 gap-6 ${
+                showBillingPanel && showPaymentPanel ? "lg:grid-cols-2" : ""
+              }`}
+            >
+              {showBillingPanel ? (
+                <section className="flex max-h-[520px] flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-semibold text-slate-900">Billing Panel</h2>
               <p className="mt-1 text-sm text-slate-600">Completed sessions (unbilled)</p>
 
               {billingError && <p className="mb-2 mt-2 text-sm text-red-600">{billingError}</p>}
+              {selectedSessionIds.length > 0 && billingRunningPayerConflicts.length > 0 ? (
+                <div className="mb-2 mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  Warning: Running session exists for payer
+                  {billingRunningPayerConflicts.length > 1 ? "s" : ""} {" "}
+                  {billingRunningPayerConflicts.join(", ")}.
+                </div>
+              ) : null}
 
               <div className="mt-3 flex-1 overflow-auto">
                 <table className="min-w-full text-left text-sm">
@@ -3285,12 +3451,16 @@ export default function HomePage() {
                   <tbody>
                     {completedSessions.map((row) => {
                       const selected = selectedSessionIds.includes(row.id);
+                      const samePayerHighlighted = !selected && (() => {
+                        const payerKey = billingPayerKey(row);
+                        return payerKey !== "" && selectedBillingPayerKeys.has(payerKey);
+                      })();
                       return (
                       <tr
                         key={row.id}
                         onClick={() => toggleSessionSelection(row.id)}
                         className={`cursor-pointer border-b border-slate-100 hover:bg-slate-100 ${
-                          selected ? "bg-indigo-50" : ""
+                          selected ? "bg-indigo-50" : samePayerHighlighted ? "bg-amber-50" : ""
                         }`}
                       >
                         <td className="py-2 pr-3">
@@ -3329,18 +3499,30 @@ export default function HomePage() {
                 <p className="text-xl font-bold text-slate-900">
                   Subtotal: {formatMoney(selectedTotalAmount)}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => void createBill()}
-                  disabled={billingBusy || selectedSessionIds.length === 0}
-                  className="mt-3 w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-                >
-                  Create Bill
-                </button>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void createBill()}
+                    disabled={billingBusy || selectedSessionIds.length === 0}
+                    className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    Create Bill
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void createBill(true)}
+                    disabled={billingBusy || selectedSessionIds.length === 0}
+                    className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    Create & Print Bill
+                  </button>
+                </div>
               </div>
-            </section>
+                </section>
+              ) : null}
 
-            <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-md">
+              {showPaymentPanel ? (
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-semibold text-slate-900">Payment Panel</h2>
 
               {paymentError ? <p className="mt-2 text-sm text-red-600">{paymentError}</p> : null}
@@ -3353,7 +3535,7 @@ export default function HomePage() {
                   <button
                     key={bill.id}
                     type="button"
-                    onClick={() => setSelectedBillId(bill.id)}
+                    onClick={() => setSelectedBillId((prev) => (prev === bill.id ? null : bill.id))}
                     disabled={paymentBusy}
                     className={`w-full border-b border-slate-200 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-100 ${
                       selectedBillId === bill.id ? "bg-indigo-50 font-semibold" : "bg-white"
@@ -3370,77 +3552,98 @@ export default function HomePage() {
               {selectedBill ? (
                 <>
                   <div className="mt-3 rounded-md border border-slate-200 p-3">
-                    <p className="text-sm font-semibold text-slate-800">Bill Discount</p>
-                    <div className="mt-2 space-y-2">
-                      <select
-                        value={billDiscountType}
-                        onChange={(e) =>
-                          setBillDiscountType(e.target.value as "none" | "fixed" | "percent")
-                        }
-                        disabled={discountBusy || paymentBusy}
-                        className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                      >
-                        <option value="none">none</option>
-                        <option value="fixed">fixed</option>
-                        <option value="percent">percent</option>
-                      </select>
-                      {billDiscountType !== "none" ? (
-                        <input
-                          type="number"
-                          value={billDiscountValue}
-                          onChange={(e) => setBillDiscountValue(e.target.value)}
-                          placeholder={billDiscountType === "fixed" ? "Amount" : "Percent"}
+                    <button
+                      type="button"
+                      onClick={() => setPaymentDiscountOpen((prev) => !prev)}
+                      className="flex w-full items-center justify-between text-left"
+                    >
+                      <p className="text-sm font-semibold text-slate-800">Bill Discount</p>
+                      <span className="text-xs text-slate-600">{paymentDiscountOpen ? "▲" : "▼"}</span>
+                    </button>
+                    {paymentDiscountOpen ? (
+                      <div className="mt-2 space-y-2">
+                        <select
+                          value={billDiscountType}
+                          onChange={(e) =>
+                            setBillDiscountType(e.target.value as "none" | "fixed" | "percent")
+                          }
                           disabled={discountBusy || paymentBusy}
                           className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                        />
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={() => void applyBillDiscount()}
-                        disabled={discountBusy || paymentBusy}
-                        className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-                      >
-                        Apply Discount
-                      </button>
-                    </div>
+                        >
+                          <option value="none">none</option>
+                          <option value="fixed">fixed</option>
+                          <option value="percent">percent</option>
+                        </select>
+                        {billDiscountType !== "none" ? (
+                          <input
+                            type="number"
+                            value={billDiscountValue}
+                            onChange={(e) => setBillDiscountValue(e.target.value)}
+                            placeholder={billDiscountType === "fixed" ? "Amount" : "Percent"}
+                            disabled={discountBusy || paymentBusy}
+                            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                          />
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void applyBillDiscount()}
+                          disabled={discountBusy || paymentBusy}
+                          className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                        >
+                          Apply Discount
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
 
-                  <div className="mt-3 rounded-md bg-slate-50 p-3 text-sm text-slate-700">
-                    <p>Bill ID: {selectedBill.id}</p>
-                    <p>Subtotal: {formatMoney(selectedBill.totalAmount)}</p>
-                    <p>
-                      Discount:{" "}
-                      {selectedBill.discountType === "fixed"
-                        ? `₹${selectedBill.discountValue ?? 0}`
-                        : selectedBill.discountType === "percent"
-                          ? `${selectedBill.discountValue ?? 0}%`
-                          : "-"}
-                    </p>
-                    <p>Total: {formatMoney(selectedBill.discountedAmount)}</p>
-                    <p>Paid: {formatMoney(selectedBill.paidAmount)}</p>
-                    <p className="font-semibold">Remaining: {formatMoney(selectedBill.remainingAmount)}</p>
-                    <div className="mt-2">
-                      <p className="text-xs font-semibold text-slate-600">Payment History</p>
-                      <ul className="mt-1 space-y-1 text-xs">
-                        {selectedBill.payments.map((payment, index) => (
-                          <li key={`${payment.mode}-${index}`}>
-                            {payment.mode} ₹{formatMoney(payment.amount)}
-                            {payment.mode === "due" ? (
-                              <>
-                                {" - "}
-                                {(payment.dueCustomerName ?? "Unknown")} ({payment.dueCustomerPhone ?? "-"})
-                                {payment.dueSettledAt
-                                  ? ` [received via ${payment.dueReceivedMode ?? "cash"}]`
-                                  : " [pending]"}
-                              </>
+                  <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+                    <button
+                      type="button"
+                      onClick={() => setPaymentSummaryOpen((prev) => !prev)}
+                      className="flex w-full items-center justify-between text-left"
+                    >
+                      <p className="text-sm font-semibold text-slate-800">Payment Summary</p>
+                      <span className="text-xs text-slate-600">{paymentSummaryOpen ? "▲" : "▼"}</span>
+                    </button>
+                    {paymentSummaryOpen ? (
+                      <div className="mt-2 space-y-1 text-sm text-slate-700">
+                        <p>Bill ID: {selectedBill.id}</p>
+                        <p>Subtotal: {formatMoney(selectedBill.totalAmount)}</p>
+                        <p>
+                          Discount:{" "}
+                          {selectedBill.discountType === "fixed"
+                            ? `₹${selectedBill.discountValue ?? 0}`
+                            : selectedBill.discountType === "percent"
+                              ? `${selectedBill.discountValue ?? 0}%`
+                              : "-"}
+                        </p>
+                        <p>Total: {formatMoney(selectedBill.discountedAmount)}</p>
+                        <p>Paid: {formatMoney(selectedBill.paidAmount)}</p>
+                        <p className="font-semibold">Remaining: {formatMoney(selectedBill.remainingAmount)}</p>
+                        <div className="mt-2">
+                          <p className="text-xs font-semibold text-slate-600">Payment History</p>
+                          <ul className="mt-1 space-y-1 text-xs">
+                            {selectedBill.payments.map((payment, index) => (
+                              <li key={`${payment.mode}-${index}`}>
+                                {payment.mode} ₹{formatMoney(payment.amount)}
+                                {payment.mode === "due" ? (
+                                  <>
+                                    {" - "}
+                                    {(payment.dueCustomerName ?? "Unknown")} ({payment.dueCustomerPhone ?? "-"})
+                                    {payment.dueSettledAt
+                                      ? ` [received via ${payment.dueReceivedMode ?? "cash"}]`
+                                      : " [pending]"}
+                                  </>
+                                ) : null}
+                              </li>
+                            ))}
+                            {selectedBill.payments.length === 0 ? (
+                              <li className="text-slate-500">No payments yet</li>
                             ) : null}
-                          </li>
-                        ))}
-                        {selectedBill.payments.length === 0 ? (
-                          <li className="text-slate-500">No payments yet</li>
-                        ) : null}
-                      </ul>
-                    </div>
+                          </ul>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -3452,109 +3655,246 @@ export default function HomePage() {
                     >
                       Pay Full
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setPaymentAmount("100")}
-                      disabled={paymentBusy}
-                      className="rounded-md bg-slate-200 px-3 py-1 text-xs disabled:opacity-50"
-                    >
-                      ₹100
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPaymentAmount("200")}
-                      disabled={paymentBusy}
-                      className="rounded-md bg-slate-200 px-3 py-1 text-xs disabled:opacity-50"
-                    >
-                      ₹200
-                    </button>
+                    {paymentShortcutAmounts.map((amount) => (
+                      <button
+                        key={`payment-shortcut-${amount}`}
+                        type="button"
+                        onClick={() => setPaymentAmount(String(amount))}
+                        disabled={paymentBusy}
+                        className="rounded-md bg-slate-200 px-3 py-1 text-xs disabled:opacity-50"
+                      >
+                        ₹{amount}
+                      </button>
+                    ))}
                   </div>
 
-                  <div className="mt-4 space-y-3">
-                    <input
-                      type="number"
-                      value={paymentAmount}
-                      onChange={(e) => setPaymentAmount(e.target.value)}
-                      placeholder="Amount"
-                      disabled={paymentBusy}
-                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    />
+                  <div className="mt-4 grid grid-cols-[92px_minmax(0,1fr)_auto] items-center gap-2">
                     <select
                       value={paymentMode}
                       onChange={(e) => setPaymentMode(e.target.value as PaymentMode)}
                       disabled={paymentBusy}
-                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      className="rounded-md border border-slate-300 px-2 py-2 text-xs"
                     >
                       <option value="cash">cash</option>
                       <option value="upi">upi</option>
                       <option value="card">card</option>
                       <option value="due">due</option>
                     </select>
-                    {paymentMode === "due" ? (
-                      <div className="relative grid grid-cols-1 gap-2">
-                        <input
-                          type="text"
-                          value={dueCustomerName}
-                          onFocus={() => setShowCustomerSuggestions(true)}
-                          onChange={(e) => {
-                            setDueCustomerName(e.target.value);
-                            setShowCustomerSuggestions(true);
-                          }}
-                          placeholder="Customer name"
-                          disabled={paymentBusy}
-                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                        />
-                        <input
-                          type="text"
-                          value={dueCustomerPhone}
-                          onFocus={() => setShowCustomerSuggestions(true)}
-                          onChange={(e) => {
-                            setDueCustomerPhone(e.target.value);
-                            setShowCustomerSuggestions(true);
-                          }}
-                          placeholder="Customer phone number"
-                          disabled={paymentBusy}
-                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                        />
-                        {showCustomerSuggestions && customerSuggestions.length > 0 ? (
-                          <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-40 overflow-auto rounded-md border border-slate-200 bg-white shadow-lg">
-                            {customerSuggestions.map((customer) => (
-                              <button
-                                key={customer.id}
-                                type="button"
-                                onClick={() => {
-                                  setDueCustomerName(customer.name);
-                                  setDueCustomerPhone(customer.phone);
-                                  setShowCustomerSuggestions(false);
-                                }}
-                                className="flex w-full items-center justify-between border-b border-slate-100 px-3 py-2 text-left text-xs hover:bg-slate-50"
-                              >
-                                <span className="font-medium text-slate-800">{customer.name}</span>
-                                <span className="text-slate-600">{customer.phone}</span>
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
+                    <input
+                      type="number"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      placeholder="Amount"
+                      disabled={paymentBusy}
+                      className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    />
                     <button
                       type="button"
                       onClick={() => void addPayment()}
                       disabled={paymentBusy}
-                      className="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+                      className="whitespace-nowrap rounded-md bg-teal-600 px-3 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
                     >
                       Add Payment
                     </button>
                   </div>
+
+                  {paymentMode === "due" ? (
+                    <div className="relative mt-2 grid grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        value={dueCustomerName}
+                        onFocus={() => setShowCustomerSuggestions(true)}
+                        onChange={(e) => {
+                          setDueCustomerName(e.target.value);
+                          setShowCustomerSuggestions(true);
+                        }}
+                        placeholder="Customer name"
+                        disabled={paymentBusy}
+                        className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="text"
+                        value={dueCustomerPhone}
+                        onFocus={() => setShowCustomerSuggestions(true)}
+                        onChange={(e) => {
+                          setDueCustomerPhone(e.target.value);
+                          setShowCustomerSuggestions(true);
+                        }}
+                        placeholder="Customer phone number"
+                        disabled={paymentBusy}
+                        className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      />
+                      {showCustomerSuggestions && customerSuggestions.length > 0 ? (
+                        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-40 overflow-auto rounded-md border border-slate-200 bg-white shadow-lg">
+                          {customerSuggestions.map((customer) => (
+                            <button
+                              key={customer.id}
+                              type="button"
+                              onClick={() => {
+                                setDueCustomerName(customer.name);
+                                setDueCustomerPhone(customer.phone);
+                                setShowCustomerSuggestions(false);
+                              }}
+                              className="flex w-full items-center justify-between border-b border-slate-100 px-3 py-2 text-left text-xs hover:bg-slate-50"
+                            >
+                              <span className="font-medium text-slate-800">{customer.name}</span>
+                              <span className="text-slate-600">{customer.phone}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </>
               ) : (
                 <div className="mt-3 rounded-md border border-dashed border-slate-300 bg-slate-50 p-3 text-sm text-slate-600">
                   Select a bill to view discount and payment controls.
                 </div>
               )}
-            </section>
+                </section>
+              ) : null}
+            </div>
+          ) : null}
 
-          </aside>
+          <section className="rounded-xl border border-slate-300 bg-white p-4 shadow-md">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold text-slate-900">Session Ledger (Current)</h2>
+              <Link
+                href="/reports"
+                className="rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900"
+              >
+                Open Reports
+              </Link>
+            </div>
+            <p className="mt-1 text-[11px] text-slate-600">
+              Business day: {formatDateTimeFull(ledgerWindow.start)} to {formatDateTimeFull(ledgerWindow.end)}
+            </p>
+            <p className="mt-1 text-xs text-slate-600">
+              <span className="mr-1 inline-block h-2 w-2 rounded-full bg-indigo-500 align-middle" />
+              Rows with overrides are marked.
+            </p>
+            <div className="mt-3 max-h-[420px] overflow-auto">
+              <table className="min-w-full text-left text-xs">
+                <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700">
+                  <tr>
+                    <th className="px-2 py-2">Bill</th>
+                    <th className="px-2 py-2">Table</th>
+                    <th className="px-2 py-2">Player</th>
+                    <th className="px-2 py-2">Date</th>
+                    <th className="px-2 py-2">Start</th>
+                    <th className="px-2 py-2">End</th>
+                    <th className="px-2 py-2">Duration</th>
+                    <th className="px-2 py-2">Rate</th>
+                    <th className="px-2 py-2">Amount</th>
+                    <th className="px-2 py-2">Paid</th>
+                    <th className="px-2 py-2">Status</th>
+                    <th className="px-2 py-2">Mode</th>
+                    <th className="px-2 py-2">Payer</th>
+                    <th className="px-2 py-2">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedLedgerRows.map((row, index) => {
+                    const modeText = row.paymentModes?.length
+                      ? row.paymentModes.join(", ")
+                      : "-";
+                    const overridden = hasSessionOverrides(row);
+                    const prev = index > 0 ? sortedLedgerRows[index - 1] : null;
+                    const groupDivider = prev && prev.billId !== row.billId
+                      ? "border-t-4 border-slate-300"
+                      : "";
+
+                    return (
+                    <tr
+                      key={row.id}
+                      className={`${ledgerRowColor(row.state)} ${groupDivider} ${
+                        overridden ? "ring-1 ring-inset ring-indigo-200" : ""
+                      }`}
+                    >
+                      <td className="px-2 py-2">
+                        {row.billId ? `Bill #${row.billId}` : "-"}
+                        {overridden ? (
+                          <span className="ml-1 inline-block h-2 w-2 rounded-full bg-indigo-500" />
+                        ) : null}
+                      </td>
+                      <td className="px-2 py-2">{row.tableName}</td>
+                      <td className="px-2 py-2">{row.playerName}</td>
+                      <td className="px-2 py-2">{row.businessDayKey ?? "-"}</td>
+                      <td className="px-2 py-2">{formatTime12h(row.startTime)}</td>
+                      <td className="px-2 py-2">{formatTime12h(row.endTime)}</td>
+                      <td className="px-2 py-2">{row.durationMinutes} min</td>
+                      <td className="px-2 py-2">{formatRate(row.ratePerMin, row.tableName)}</td>
+                      <td className="px-2 py-2">{formatLedgerAmountWithDiscount(row)}</td>
+                      <td className="px-2 py-2">{formatMoney(row.effectivePaid)}</td>
+                      <td className="px-2 py-2">{ledgerStatusText(row.state)}</td>
+                      <td className="px-2 py-2">
+                        <span>{modeText}</span>
+                        {row.paymentSplit.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() => setSplitViewSession(row)}
+                            title="View split"
+                            aria-label="View split"
+                            className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              className="h-3.5 w-3.5"
+                            >
+                              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+                              <circle cx="12" cy="12" r="3" />
+                            </svg>
+                          </button>
+                        ) : null}
+                      </td>
+                      <td className="px-2 py-2">{formatPayer(row.payerMode, row.payerData)}</td>
+                      <td className="px-2 py-2">
+                        <button
+                          type="button"
+                          onClick={() => void openHistoryModal(row)}
+                          className="mr-2 rounded-md bg-indigo-100 px-2 py-1 text-[11px] font-medium text-indigo-800 hover:bg-indigo-200"
+                        >
+                          History
+                        </button>
+                        {row.state !== "Cancelled" ? (
+                          <button
+                            type="button"
+                            onClick={() => openOverrideModal(row)}
+                            className="mr-2 rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-white hover:bg-slate-900"
+                          >
+                            Edit
+                          </button>
+                        ) : null}
+                        {(row.state === "Running" || row.state === "Completed") ? (
+                          <button
+                            type="button"
+                            onClick={() => openCancelSessionModal(row)}
+                            className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700"
+                          >
+                            Cancel
+                          </button>
+                        ) : null}
+                      </td>
+                    </tr>
+                    );
+                  })}
+                  {sortedLedgerRows.length === 0 ? (
+                    <tr>
+                      <td className="px-2 py-3 text-slate-500" colSpan={14}>
+                        No sessions in ledger
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
       </div>
 

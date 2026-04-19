@@ -91,6 +91,7 @@ model SessionOverrideEvent {
 
 model Bill {
   id          Int       @id @default(autoincrement())
+  customerId  Int?
   totalAmount Float
   discountType String?
   discountValue Float?
@@ -98,6 +99,9 @@ model Bill {
   createdAt   DateTime  @default(now())
   sessions    Session[]
   payments    Payment[]
+  customer    Customer? @relation(fields: [customerId], references: [id])
+
+  @@index([customerId])
 
   @@map("bills")
 }
@@ -140,13 +144,76 @@ model DailyReport {
   @@map("daily_reports")
 }
 
+model DailyClosing {
+  id              Int      @id @default(autoincrement())
+  date            String   @unique
+  openingCash     Float
+  openingBank     Float
+  salesCash       Float
+  salesBank       Float
+  foodSalesCash   Float    @default(0)
+  foodSalesBank   Float    @default(0)
+  foodSalesDue    Float    @default(0)
+  foodDueReceivedCash Float @default(0)
+  foodDueReceivedBank Float @default(0)
+  accessoriesSalesCash Float @default(0)
+  accessoriesSalesBank Float @default(0)
+  accessoriesSalesDue  Float @default(0)
+  dueReceivedCash Float
+  dueReceivedBank Float
+  expenseCash     Float    @default(0)
+  expenseBank     Float    @default(0)
+  newDueTotal     Float    @default(0)
+  closingCash     Float
+  closingBank     Float
+  actualCash      Float?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([date])
+  @@map("daily_closing")
+}
+
+model ExpenseCategory {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  entries   ExpenseEntry[]
+
+  @@index([name])
+  @@map("expense_categories")
+}
+
+model ExpenseEntry {
+  id         Int      @id @default(autoincrement())
+  date       String
+  categoryId Int
+  item       String
+  amount     Float
+  mode       ExpenseMode
+  createdBy  Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  user     User            @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+
+  @@index([date, mode])
+  @@index([categoryId])
+  @@index([createdBy])
+  @@map("expense_entries")
+}
+
 model Customer {
   id         Int      @id @default(autoincrement())
   name       String
-  phone      String   @unique
+  phone      String?  @unique
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   lastSeenAt DateTime @default(now())
+  bills      Bill[]
 
   @@index([name])
   @@map("customers")
@@ -160,6 +227,7 @@ model User {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  expenseEntries ExpenseEntry[]
 
   @@index([name])
   @@unique([pinHash])
@@ -225,4 +293,9 @@ enum ChartMode {
   auto
   day
   hour
+}
+
+enum ExpenseMode {
+  cash
+  bank
 }

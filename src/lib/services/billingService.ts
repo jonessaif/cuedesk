@@ -1,4 +1,42 @@
 import { roundMoney } from "@/lib/billTotals";
+import { customerService } from "@/lib/services/customerService";
+
+function normalizePayerMode(value: unknown): "none" | "single" | "split" {
+  if (value === "single" || value === "split" || value === "none") {
+    return value;
+  }
+  return "none";
+}
+
+function getEffectivePayerNames(session: {
+  playerName: string;
+  payerMode: "none" | "single" | "split";
+  payerData: unknown;
+  overridePayerMode?: string | null;
+  overridePayerData?: unknown;
+}): string[] {
+  const mode = normalizePayerMode(session.overridePayerMode ?? session.payerMode);
+  const data = session.overridePayerData ?? session.payerData;
+
+  if (mode === "single") {
+    const name = (data as { name?: unknown } | null | undefined)?.name;
+    if (typeof name === "string" && name.trim()) {
+      return [name.trim()];
+    }
+  }
+
+  if (mode === "split") {
+    if (!Array.isArray(data)) {
+      return [];
+    }
+    return data
+      .map((row) => (row as { name?: unknown }).name)
+      .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+      .map((name) => name.trim());
+  }
+
+  return session.playerName?.trim() ? [session.playerName.trim()] : [];
+}
 
 function calculateEffectiveSessionAmount(session: {
   startTime: Date;
@@ -97,7 +135,21 @@ export const billingService = {
             outcome: "NORMAL";
             cancellationReason: null;
           };
-          include: { table: { select: { ratePerMin: true; name: true } } };
+          select: {
+            id: true;
+            amount: true;
+            startTime: true;
+            endTime: true;
+            overrideStartTime: true;
+            overrideEndTime: true;
+            overrideRatePerMin: true;
+            playerName: true;
+            payerMode: true;
+            payerData: true;
+            overridePayerMode: true;
+            overridePayerData: true;
+            table: { select: { ratePerMin: true; name: true } };
+          };
         }) => Promise<
           Array<{
             id: number;
@@ -107,6 +159,11 @@ export const billingService = {
             overrideStartTime?: Date | null;
             overrideEndTime?: Date | null;
             overrideRatePerMin?: number | null;
+            playerName: string;
+            payerMode: "none" | "single" | "split";
+            payerData: unknown;
+            overridePayerMode: string | null;
+            overridePayerData: unknown;
             table: { ratePerMin: number; name: string };
           }>
         >;
@@ -119,7 +176,19 @@ export const billingService = {
         outcome: "NORMAL",
         cancellationReason: null,
       },
-      include: {
+      select: {
+        id: true,
+        amount: true,
+        startTime: true,
+        endTime: true,
+        overrideStartTime: true,
+        overrideEndTime: true,
+        overrideRatePerMin: true,
+        playerName: true,
+        payerMode: true,
+        payerData: true,
+        overridePayerMode: true,
+        overridePayerData: true,
         table: { select: { ratePerMin: true, name: true } },
       },
     });
@@ -139,10 +208,39 @@ export const billingService = {
       input.discountValue,
     );
 
+    const resolvedPayerNames = sessions.flatMap((session) => getEffectivePayerNames({
+      playerName: session.playerName,
+      payerMode: session.payerMode,
+      payerData: session.payerData,
+      overridePayerMode: session.overridePayerMode,
+      overridePayerData: session.overridePayerData,
+    }));
+    const canonicalByIdentity = new Map<string, string>();
+    for (const rawName of resolvedPayerNames) {
+      const name = rawName.trim();
+      if (!name) {
+        continue;
+      }
+      const identity = name.toLowerCase();
+      if (!canonicalByIdentity.has(identity)) {
+        canonicalByIdentity.set(identity, name);
+      }
+    }
+
+    let customerId: number | null = null;
+    if (canonicalByIdentity.size === 1) {
+      const onlyName = Array.from(canonicalByIdentity.values())[0];
+      const customer = await customerService.resolveCustomerByPayerName(prisma, {
+        payerName: onlyName,
+      });
+      customerId = customer?.id ?? null;
+    }
+
     const bill = await (
       billModel as {
         create: (args: {
           data: {
+            customerId: number | null;
             totalAmount: number;
             discountType: string | null;
             discountValue: number | null;
@@ -152,6 +250,7 @@ export const billingService = {
       }
     ).create({
       data: {
+        customerId,
         totalAmount,
         discountType: discount.discountType,
         discountValue: discount.discountValue,

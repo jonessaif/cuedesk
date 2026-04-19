@@ -116,14 +116,36 @@ export const paymentService = {
 
     const dueCustomerName = input.dueCustomerName?.trim() ?? "";
     const dueCustomerPhone = input.dueCustomerPhone?.trim() ?? "";
+    let linkedCustomerId: number | null = null;
     if (input.mode === "due") {
       if (!dueCustomerName || !dueCustomerPhone) {
         throw new Error("Due requires customer name and phone");
       }
-      await customerService.upsertCustomer(prisma, {
+      const customer = await customerService.upsertCustomer(prisma, {
         name: dueCustomerName,
         phone: dueCustomerPhone,
       });
+      linkedCustomerId = (
+        customer &&
+        typeof customer === "object" &&
+        "id" in customer &&
+        typeof (customer as { id?: unknown }).id === "number"
+      )
+        ? (customer as { id: number }).id
+        : null;
+      if (linkedCustomerId !== null) {
+        await (
+          billModel as {
+            update: (args: {
+              where: { id: number };
+              data: { customerId: number };
+            }) => Promise<unknown>;
+          }
+        ).update({
+          where: { id: input.billId },
+          data: { customerId: linkedCustomerId },
+        });
+      }
     }
 
     return (
