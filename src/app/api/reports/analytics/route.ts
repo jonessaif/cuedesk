@@ -1,4 +1,5 @@
 import { requireOperatorOrAdmin } from "@/lib/authz";
+import { getEffectiveBillTotals } from "@/lib/billTotals";
 import { getBusinessDayRangeFromKeyWithReset, getBusinessDayRangeWithReset } from "@/lib/businessDay";
 import { prisma } from "@/lib/prisma";
 import {
@@ -28,6 +29,21 @@ type WindowInfo = {
 type RevenueSeriesPoint = {
   label: string;
   revenue: number;
+};
+
+type SessionRow = {
+  id: number;
+  tableId: number;
+  startTime: Date;
+  endTime: Date | null;
+  businessDayKey?: string | null;
+  overrideStartTime: Date | null;
+  overrideEndTime: Date | null;
+  status: "running" | "completed" | "billed";
+  overrideStatus: "running" | "completed" | "billed" | null;
+  overrideRatePerMin: number | null;
+  outcome: "NORMAL" | "LTP_LOSS" | "CANCELLED" | null;
+  billId: number | null;
 };
 
 function parseIsoDate(value: string): Date | null {
@@ -61,6 +77,65 @@ function toDayCountInclusive(startDate: string, endDate: string): number {
     return 1;
   }
   return Math.floor(diffMs / (24 * 60 * 60 * 1000)) + 1;
+}
+
+function isHourlyTable(tableName: string): boolean {
+  return tableName.toUpperCase().startsWith("PS");
+}
+
+function calculateSessionAmount(args: {
+  startTime: Date;
+  endTime: Date | null;
+  ratePerMin: number;
+  tableName: string;
+}): number {
+  if (!args.endTime) {
+    return 0;
+  }
+  const diffMs = args.endTime.getTime() - args.startTime.getTime();
+  if (diffMs <= 0) {
+    return 0;
+  }
+  if (isHourlyTable(args.tableName)) {
+    const billedHours = Math.ceil(diffMs / (60 * 60 * 1000));
+    return roundMoney(billedHours * args.ratePerMin * 60);
+  }
+  const minutes = Math.floor(diffMs / 60000);
+  return minutes > 0 ? roundMoney(minutes * args.ratePerMin) : 0;
+}
+
+function distributeProportionally(
+  total: number,
+  weights: Array<{ id: number; weight: number }>,
+): Map<number, number> {
+  const normalizedTotal = roundMoney(Math.max(total, 0));
+  const validWeights = weights.filter((entry) => entry.weight > 0);
+  const result = new Map<number, number>();
+  if (normalizedTotal <= 0 || validWeights.length === 0) {
+    for (const entry of weights) {
+      result.set(entry.id, 0);
+    }
+    return result;
+  }
+  const weightSum = validWeights.reduce((sum, entry) => sum + entry.weight, 0);
+  let assigned = 0;
+  for (let index = 0; index < validWeights.length; index += 1) {
+    const entry = validWeights[index];
+    let share = 0;
+    if (index === validWeights.length - 1) {
+      share = roundMoney(normalizedTotal - assigned);
+    } else {
+      share = roundMoney((entry.weight / weightSum) * normalizedTotal);
+      assigned = roundMoney(assigned + share);
+    }
+    result.set(entry.id, share);
+  }
+  for (const entry of weights) {
+    if (!result.has(entry.id)) {
+      result.set(entry.id, 0);
+    }
+  }
+  return result;
 }
 
 function splitByBusinessDay(
@@ -285,13 +360,14 @@ export async function GET(request: Request) {
         tableId: true,
         startTime: true,
         endTime: true,
+        businessDayKey: true,
         overrideStartTime: true,
         overrideEndTime: true,
         status: true,
         overrideStatus: true,
         overrideRatePerMin: true,
-        amount: true,
         outcome: true,
+        billId: true,
       },
     });
 
@@ -317,7 +393,109 @@ export async function GET(request: Request) {
       tableSessionIds.set(tableId, new Set<number>());
     }
 
-    for (const session of sessions) {
+    const scopedSessions = (sessions as SessionRow[]).filter((session) => {
+      if (windowInfo.scope === "custom") {
+        return true;
+      }
+      const effectiveStart = session.overrideStartTime ?? session.startTime;
+      const key = session.businessDayKey ?? getBusinessDayRangeWithReset(effectiveStart, resetMinutes).key;
+      if (windowInfo.scope === "day") {
+        return key === windowInfo.key;
+      }
+      if (windowInfo.scope === "range") {
+        return Boolean(windowInfo.startDate && windowInfo.endDate && key >= windowInfo.startDate && key <= windowInfo.endDate);
+      }
+      return key === windowInfo.key;
+    });
+
+    const billIds = Array.from(new Set(
+      scopedSessions
+        .map((session) => session.billId)
+        .filter((billId): billId is number => typeof billId === "number"),
+    ));
+    const billsById = new Map<number, { totalAmount: number; discountedAmount: number; discountType: string | null }>();
+    if (billIds.length > 0) {
+      const bills = await prisma.bill.findMany({
+        where: { id: { in: billIds } },
+        select: { id: true, totalAmount: true, discountedAmount: true, discountType: true },
+      });
+      for (const bill of bills) {
+        billsById.set(bill.id, {
+          totalAmount: bill.totalAmount,
+          discountedAmount: bill.discountedAmount,
+          discountType: bill.discountType,
+        });
+      }
+    }
+
+    const baseRevenueBySessionId = new Map<number, number>();
+    for (const session of scopedSessions) {
+      const table = tableById.get(session.tableId);
+      if (!table) {
+        continue;
+      }
+      const effectiveStatus = getEffectiveStatus({
+        status: session.status,
+        overrideStatus: session.overrideStatus,
+      });
+      const effectiveStart = session.overrideStartTime ?? session.startTime;
+      const effectiveEnd = effectiveStatus === "running" ? null : (session.overrideEndTime ?? session.endTime);
+      const isNormal = (session.outcome ?? "NORMAL") === "NORMAL";
+      const amount = isNormal
+        ? calculateSessionAmount({
+          startTime: effectiveStart,
+          endTime: effectiveEnd,
+          ratePerMin: session.overrideRatePerMin ?? table.ratePerMin,
+          tableName: table.name,
+        })
+        : 0;
+      baseRevenueBySessionId.set(session.id, amount);
+    }
+
+    const finalRevenueBySessionId = new Map<number, number>();
+    const sessionsByBillId = new Map<number, SessionRow[]>();
+    for (const session of scopedSessions) {
+      if (typeof session.billId === "number") {
+        const existing = sessionsByBillId.get(session.billId) ?? [];
+        existing.push(session);
+        sessionsByBillId.set(session.billId, existing);
+      } else {
+        finalRevenueBySessionId.set(session.id, baseRevenueBySessionId.get(session.id) ?? 0);
+      }
+    }
+    for (const [billId, billSessions] of sessionsByBillId) {
+      const billMeta = billsById.get(billId);
+      const sessionsAmount = roundMoney(
+        billSessions.reduce((sum, session) => sum + (baseRevenueBySessionId.get(session.id) ?? 0), 0),
+      );
+      const totals = billMeta
+        ? getEffectiveBillTotals({
+          totalAmount: billMeta.totalAmount,
+          discountType: billMeta.discountType,
+          discountedAmount: billMeta.discountedAmount,
+          sessionsAmount,
+        })
+        : getEffectiveBillTotals({
+          totalAmount: sessionsAmount,
+          discountType: null,
+          discountedAmount: sessionsAmount,
+          sessionsAmount,
+        });
+      const allocated = distributeProportionally(
+        totals.finalAmount,
+        billSessions.map((session) => ({
+          id: session.id,
+          weight: baseRevenueBySessionId.get(session.id) ?? 0,
+        })),
+      );
+      for (const session of billSessions) {
+        const base = baseRevenueBySessionId.get(session.id) ?? 0;
+        const finalAmount = roundMoney(Math.max(Math.min(allocated.get(session.id) ?? 0, base), 0));
+        finalRevenueBySessionId.set(session.id, finalAmount);
+      }
+    }
+
+    for (const session of scopedSessions) {
       const table = tableById.get(session.tableId);
       if (!table) {
         continue;
@@ -356,11 +534,9 @@ export async function GET(request: Request) {
         toMinutes(rawEnd.getTime() - effectiveStart.getTime()),
         overlapMinutes,
       );
-      const effectiveRate = session.overrideRatePerMin ?? table.ratePerMin;
-      const fallbackAmount = effectiveRate * fullDurationMinutes;
-      const sessionAmount = typeof session.amount === "number" ? session.amount : fallbackAmount;
-      const revenueShare = session.outcome === "NORMAL"
-        ? sessionAmount * (overlapMinutes / fullDurationMinutes)
+      const sessionRevenue = finalRevenueBySessionId.get(session.id) ?? 0;
+      const revenueShare = sessionRevenue > 0
+        ? sessionRevenue * (overlapMinutes / fullDurationMinutes)
         : 0;
 
       tableRevenue.set(
