@@ -425,7 +425,7 @@ export default function CustomerInsightsPage() {
           </div>
 
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <section className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <section className="order-2 rounded-lg border border-slate-200 bg-slate-50 p-3 lg:order-1">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold text-slate-900">Top Customers</h2>
                 <label className="text-[11px] font-semibold text-slate-700">
@@ -508,8 +508,8 @@ export default function CustomerInsightsPage() {
               </section>
             </section>
 
-            <div className="space-y-4">
-              <section ref={actionRequiredRef} className="order-1 rounded-lg border border-rose-200 bg-rose-50 p-3">
+            <div className="order-1 space-y-4 lg:order-2">
+              <section ref={actionRequiredRef} className="rounded-lg border border-rose-200 bg-rose-50 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="text-sm font-semibold text-rose-900">⚠ Action Required</h2>
                   <p className="text-[11px] text-rose-700">At risk = no visit in last {RISK_THRESHOLD_DAYS} days</p>
@@ -534,7 +534,7 @@ export default function CustomerInsightsPage() {
                 </div>
               </section>
 
-              <section className="order-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <section className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                 <h2 className="text-sm font-semibold text-emerald-900">✓ Active High Value</h2>
                 <div className="mt-2 space-y-2">
                   {activeHighValueCustomers.map((row) => {
