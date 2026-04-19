@@ -7,6 +7,17 @@ function parseDateKey(value: string | null): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
 }
 
+function parseTableId(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+  return String(parsed);
+}
+
 function todayDateKey(): string {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -22,6 +33,7 @@ export async function GET(request: Request) {
   const date = parseDateKey(incoming.searchParams.get("date")) ?? todayDateKey();
   const startDate = parseDateKey(incoming.searchParams.get("startDate"));
   const endDate = parseDateKey(incoming.searchParams.get("endDate"));
+  const tableId = parseTableId(incoming.searchParams.get("tableId"));
 
   const target = new URL(request.url);
   target.pathname = "/api/reports/analytics";
@@ -35,6 +47,9 @@ export async function GET(request: Request) {
   } else {
     target.searchParams.set("scope", "day");
     target.searchParams.set("date", date);
+  }
+  if (tableId) {
+    target.searchParams.set("tableId", tableId);
   }
   return getReportsAnalytics(new Request(target.toString(), request));
 }

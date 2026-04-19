@@ -465,6 +465,85 @@ function buildReportQueryState(args: {
   };
 }
 
+function shiftDateKey(dateKey: string, dayDelta: number): string | null {
+  const parsed = new Date(`${dateKey}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  parsed.setDate(parsed.getDate() + dayDelta);
+  return formatDateInputValue(parsed);
+}
+
+function withAnalyticsTableFilter(base: ReportQueryState, tableId: string): ReportQueryState {
+  if (tableId === "all") {
+    return base;
+  }
+  const safeTableId = Number(tableId);
+  if (!Number.isInteger(safeTableId) || safeTableId <= 0) {
+    return base;
+  }
+  return {
+    ...base,
+    cacheKey: `${base.cacheKey}|table:${safeTableId}`,
+    query: `${base.query}&tableId=${safeTableId}`,
+  };
+}
+
+function buildPreviousReportQueryState(args: {
+  scope: LedgerScope;
+  date: string;
+  startDate: string;
+  endDate: string;
+}): ReportQueryState | null {
+  if (args.scope === "range") {
+    if (!args.startDate || !args.endDate || args.startDate > args.endDate) {
+      return null;
+    }
+    const start = new Date(`${args.startDate}T00:00:00`);
+    const end = new Date(`${args.endDate}T00:00:00`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() < start.getTime()) {
+      return null;
+    }
+    const diffDays = Math.floor((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+    const prevStart = shiftDateKey(args.startDate, -diffDays);
+    const prevEnd = shiftDateKey(args.endDate, -diffDays);
+    if (!prevStart || !prevEnd) {
+      return null;
+    }
+    return buildReportQueryState({
+      scope: "range",
+      date: args.date,
+      startDate: prevStart,
+      endDate: prevEnd,
+    });
+  }
+
+  if (args.scope === "day") {
+    const prevDate = shiftDateKey(args.date, -1);
+    if (!prevDate) {
+      return null;
+    }
+    return buildReportQueryState({
+      scope: "day",
+      date: prevDate,
+      startDate: args.startDate,
+      endDate: args.endDate,
+    });
+  }
+
+  const today = todayDateInputValue();
+  const prevDate = shiftDateKey(today, -1);
+  if (!prevDate) {
+    return null;
+  }
+  return buildReportQueryState({
+    scope: "day",
+    date: prevDate,
+    startDate: args.startDate,
+    endDate: args.endDate,
+  });
+}
+
 function normalizeMergeBucket(row: MergeBucket): MergeBucket {
   const startHour = Number.isFinite(row.startHour) ? Math.min(Math.max(Math.round(row.startHour), 0), 23) : 0;
   const endHour = Number.isFinite(row.endHour) ? Math.min(Math.max(Math.round(row.endHour), 0), 23) : 0;
@@ -580,6 +659,14 @@ export default function ReportsPage() {
       startDate: ledgerStartDate,
       endDate: ledgerEndDate,
     });
+  }
+
+  function getCurrentAnalyticsQueryState(): ReportQueryState | null {
+    const base = getCurrentReportQueryState();
+    if (!base) {
+      return null;
+    }
+    return withAnalyticsTableFilter(base, analyticsTableId);
   }
 
   async function fetchLedgerForQuery(queryState: ReportQueryState, options?: { priority?: boolean; force?: boolean }): Promise<void> {
@@ -964,7 +1051,7 @@ export default function ReportsPage() {
       }
 
       setSettingsOpen(false);
-      const queryState = getCurrentReportQueryState();
+      const queryState = getCurrentAnalyticsQueryState();
       if (queryState) {
         await fetchAnalyticsForQuery(queryState, { priority: activeTab === "analytics", force: true });
       }
@@ -1051,16 +1138,17 @@ export default function ReportsPage() {
     if (!queryState) {
       return;
     }
+    const analyticsQueryState = withAnalyticsTableFilter(queryState, analyticsTableId);
     if (activeTab === "ledger") {
       void fetchLedgerForQuery(queryState, { priority: true }).then(() => {
-        void fetchAnalyticsForQuery(queryState, { priority: false });
+        void fetchAnalyticsForQuery(analyticsQueryState, { priority: false });
       });
       return;
     }
-    void fetchAnalyticsForQuery(queryState, { priority: true }).then(() => {
+    void fetchAnalyticsForQuery(analyticsQueryState, { priority: true }).then(() => {
       void fetchLedgerForQuery(queryState, { priority: false });
     });
-  }, [activeUserId, activeTab, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate]);
+  }, [activeUserId, activeTab, analyticsTableId, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate]);
 
   useEffect(() => {
     const queryState = getCurrentReportQueryState();
@@ -1108,25 +1196,58 @@ export default function ReportsPage() {
   }, [ledgerCache, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate]);
 
   useEffect(() => {
-    const queryState = getCurrentReportQueryState();
+    const queryState = getCurrentAnalyticsQueryState();
     if (!queryState) {
       return;
     }
     const analyticsData = analyticsCache[queryState.cacheKey] ?? null;
     setAnalytics(analyticsData);
-    setPreviousAnalytics(null);
     if (!analyticsData) {
-      setTableOptions([]);
       return;
     }
-    const nextOptions = analyticsData.tables
-      .map((table) => ({ id: table.tableId, name: table.tableName }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    setTableOptions(nextOptions);
-    if (analyticsTableId !== "all" && !nextOptions.find((row) => String(row.id) === analyticsTableId)) {
-      setAnalyticsTableId("all");
+    if (analyticsTableId === "all") {
+      const nextOptions = analyticsData.tables
+        .map((table) => ({ id: table.tableId, name: table.tableName }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      setTableOptions(nextOptions);
     }
   }, [analyticsCache, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate, analyticsTableId]);
+
+  useEffect(() => {
+    if (analyticsTableId === "all") {
+      return;
+    }
+    if (tableOptions.length === 0) {
+      return;
+    }
+    if (!tableOptions.find((row) => String(row.id) === analyticsTableId)) {
+      setAnalyticsTableId("all");
+    }
+  }, [analyticsTableId, tableOptions]);
+
+  useEffect(() => {
+    if (!activeUserId) {
+      return;
+    }
+    const prevBase = buildPreviousReportQueryState({
+      scope: ledgerScope,
+      date: ledgerDate,
+      startDate: ledgerStartDate,
+      endDate: ledgerEndDate,
+    });
+    if (!prevBase) {
+      setPreviousAnalytics(null);
+      return;
+    }
+    const prevQuery = withAnalyticsTableFilter(prevBase, analyticsTableId);
+    const cachedPrev = analyticsCache[prevQuery.cacheKey] ?? null;
+    if (cachedPrev) {
+      setPreviousAnalytics(cachedPrev);
+      return;
+    }
+    setPreviousAnalytics(null);
+    void fetchAnalyticsForQuery(prevQuery, { priority: false });
+  }, [activeUserId, analyticsCache, analyticsTableId, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate]);
 
   useEffect(() => {
     if (activeTab === "analytics") {
@@ -1268,7 +1389,7 @@ export default function ReportsPage() {
                 onClick={() => setActiveTab("analytics")}
                 onMouseEnter={() => {
                   if (activeUserId) {
-                    const queryState = getCurrentReportQueryState();
+                    const queryState = getCurrentAnalyticsQueryState();
                     if (queryState) {
                       void fetchAnalyticsForQuery(queryState, { priority: false });
                     }
