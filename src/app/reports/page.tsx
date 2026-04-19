@@ -418,6 +418,18 @@ function formatDateInputValue(value: Date): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function parseDateKeyToLocalDate(dateKey: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    return null;
+  }
+  const [yearRaw, monthRaw, dayRaw] = dateKey.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  const parsed = new Date(year, month - 1, day, 0, 0, 0, 0);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function buildReportQueryState(args: {
   scope: LedgerScope;
   date: string;
@@ -794,8 +806,9 @@ export default function ReportsPage() {
   }
 
   function applyPresetFilter(preset: "thisWeek" | "thisMonth" | "lastMonth" | "last7Days") {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const businessAnchorKey = windowInfo.key ?? ledgerDate;
+    const anchor = parseDateKeyToLocalDate(businessAnchorKey);
+    const today = anchor ?? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
     let start = new Date(today);
     let end = new Date(today);
 
@@ -1194,6 +1207,18 @@ export default function ReportsPage() {
       end: null,
     });
   }, [ledgerCache, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate]);
+
+  useEffect(() => {
+    if (!windowInfo.key) {
+      return;
+    }
+    // Keep manual filters anchored to business-day keys (10 AM reset aware).
+    setLedgerDate((prev) => (prev === windowInfo.key ? prev : windowInfo.key));
+    if (ledgerScope === "current") {
+      setLedgerStartDate((prev) => (prev === windowInfo.key ? prev : windowInfo.key));
+      setLedgerEndDate((prev) => (prev === windowInfo.key ? prev : windowInfo.key));
+    }
+  }, [windowInfo.key, ledgerScope]);
 
   useEffect(() => {
     const queryState = getCurrentAnalyticsQueryState();
