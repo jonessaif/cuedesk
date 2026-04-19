@@ -451,6 +451,12 @@ export default function ReportsPage() {
   const [chartSettingsFor, setChartSettingsFor] = useState<ChartSettingsKey | null>(null);
   const [chartPreferences, setChartPreferences] = useState<ChartPreferences>(DEFAULT_CHART_PREFERENCES);
   const [tableOptions, setTableOptions] = useState<TableOption[]>([]);
+  const [ledgerCache, setLedgerCache] = useState<Record<string, { rows: LedgerSessionRow[]; summary: LedgerSummary; window: LedgerWindow }>>({});
+  const [analyticsCache, setAnalyticsCache] = useState<Record<string, AnalyticsData>>({});
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const ledgerInflightRef = useMemo(() => ({ current: new Map<string, Promise<void>>() }), []);
+  const analyticsInflightRef = useMemo(() => ({ current: new Map<string, Promise<void>>() }), []);
 
   const [rows, setRows] = useState<LedgerSessionRow[]>([]);
   const [summary, setSummary] = useState<LedgerSummary>({
@@ -514,128 +520,125 @@ export default function ReportsPage() {
     }
   }
 
-  function buildBaseParams(): URLSearchParams {
-    const params = new URLSearchParams({ scope: ledgerScope });
-    if (ledgerScope === "day" && ledgerDate) {
-      params.set("date", ledgerDate);
-    }
-    if (ledgerScope === "range") {
-      params.set("startDate", ledgerStartDate);
-      params.set("endDate", ledgerEndDate);
-    }
-    return params;
-  }
-
-  async function loadTables() {
+  async function fetchLedgerForDate(dateKey: string, options?: { priority?: boolean; force?: boolean }): Promise<void> {
     if (!activeUserId) {
       return;
     }
-    try {
-      const res = await fetch("/api/tables", {
+    if (!options?.force && ledgerCache[dateKey]) {
+      return;
+    }
+    const inflight = ledgerInflightRef.current.get(dateKey);
+    if (inflight) {
+      await inflight;
+      return;
+    }
+    const task = (async () => {
+      if (options?.priority) {
+        setLedgerLoading(true);
+      }
+      const res = await fetch(`/api/ledger?date=${encodeURIComponent(dateKey)}`, {
         cache: "no-store",
         headers: authHeaders(),
       });
-      const data = await readJsonSafe<{ data?: Array<{ id?: number; name?: string }>; error?: string }>(res);
+      const data = await readJsonSafe<{ data?: LedgerSessionRow[]; summary?: LedgerSummary; window?: LedgerWindow; error?: string }>(res);
       if (!res.ok) {
-        throw new Error(data?.error ?? "Failed to load tables");
+        throw new Error(data?.error ?? "Failed to fetch ledger");
       }
-      const nextOptions = (data?.data ?? [])
-        .filter((row): row is { id: number; name: string } => typeof row.id === "number" && typeof row.name === "string")
-        .map((row) => ({ id: row.id, name: row.name }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      setTableOptions(nextOptions);
-      if (analyticsTableId !== "all" && !nextOptions.find((row) => String(row.id) === analyticsTableId)) {
-        setAnalyticsTableId("all");
-      }
-    } catch {
-      setTableOptions([]);
-    }
+      const next = {
+        rows: data?.data ?? [],
+        summary: data?.summary ?? {
+          subtotal: 0,
+          net: 0,
+          cash: 0,
+          upi: 0,
+          card: 0,
+          due: 0,
+          dueReceived: 0,
+          dueReceivedCash: 0,
+          dueReceivedUpi: 0,
+          dueReceivedCard: 0,
+          openingDueOutstanding: 0,
+          dueOutstanding: 0,
+          netReceivableChange: 0,
+          collectionTotal: 0,
+          unpaid: 0,
+          discount: 0,
+          total: 0,
+          paid: 0,
+          isBalanced: true,
+          ltpCount: 0,
+          ltpValue: 0,
+          cancelledCount: 0,
+        },
+        window: data?.window ?? {
+          scope: "day",
+          key: dateKey,
+          start: null,
+          end: null,
+        },
+      };
+      setLedgerCache((prev) => ({ ...prev, [dateKey]: next }));
+    })()
+      .catch((e) => {
+        if (options?.priority) {
+          const message = e instanceof Error ? e.message : "Failed to fetch ledger";
+          setError(message);
+        }
+      })
+      .finally(() => {
+        ledgerInflightRef.current.delete(dateKey);
+        if (options?.priority) {
+          setLedgerLoading(false);
+        }
+      });
+    ledgerInflightRef.current.set(dateKey, task);
+    await task;
   }
 
-  async function loadReport() {
+  async function fetchAnalyticsForDate(dateKey: string, options?: { priority?: boolean; force?: boolean }): Promise<void> {
     if (!activeUserId) {
       return;
     }
-    setError("");
-    try {
-      const baseParams = buildBaseParams();
-      const ledgerQuery = baseParams.toString();
-      const analyticsParams = new URLSearchParams(baseParams);
-      if (analyticsTableId !== "all") {
-        analyticsParams.set("tableId", analyticsTableId);
-      }
-      const analyticsQuery = analyticsParams.toString();
-
-      const [ledgerRes, analyticsRes] = await Promise.all([
-        fetch(`/api/sessions/all?${ledgerQuery}`, {
-          cache: "no-store",
-          headers: authHeaders(),
-        }),
-        fetch(`/api/reports/analytics?${analyticsQuery}`, {
-          cache: "no-store",
-          headers: authHeaders(),
-        }),
-      ]);
-
-      const ledgerData = await readJsonSafe<{ data?: LedgerSessionRow[]; summary?: LedgerSummary; window?: LedgerWindow; error?: string }>(ledgerRes);
-      if (!ledgerRes.ok) {
-        throw new Error(ledgerData?.error ?? "Failed to fetch reports");
-      }
-
-      const analyticsData = await readJsonSafe<{ data?: AnalyticsData; error?: string }>(analyticsRes);
-      if (!analyticsRes.ok) {
-        throw new Error(analyticsData?.error ?? "Failed to fetch analytics");
-      }
-
-      const currentAnalytics = analyticsData?.data ?? null;
-      let previousAnalyticsData: AnalyticsData | null = null;
-
-      if (currentAnalytics?.window?.start && currentAnalytics?.window?.end) {
-        const currentStartMs = new Date(currentAnalytics.window.start).getTime();
-        const currentEndMs = new Date(currentAnalytics.window.end).getTime();
-        const windowDurationMs = currentEndMs - currentStartMs;
-        if (Number.isFinite(windowDurationMs) && windowDurationMs > 0) {
-          const previousStart = new Date(currentStartMs - windowDurationMs);
-          const previousEnd = new Date(currentStartMs);
-          const previousParams = new URLSearchParams({
-            startAt: previousStart.toISOString(),
-            endAt: previousEnd.toISOString(),
-          });
-          if (analyticsTableId !== "all") {
-            previousParams.set("tableId", analyticsTableId);
-          }
-
-          try {
-            const previousRes = await fetch(`/api/reports/analytics?${previousParams.toString()}`, {
-              cache: "no-store",
-              headers: authHeaders(),
-            });
-            const previousData = await readJsonSafe<{ data?: AnalyticsData }>(previousRes);
-            if (previousRes.ok) {
-              previousAnalyticsData = previousData?.data ?? null;
-            }
-          } catch {
-            previousAnalyticsData = null;
-          }
-        }
-      }
-
-      setRows(ledgerData?.data ?? []);
-      if (ledgerData?.summary) {
-        setSummary(ledgerData.summary);
-      }
-      if (ledgerData?.window) {
-        setWindowInfo(ledgerData.window);
-      }
-      setAnalytics(currentAnalytics);
-      setPreviousAnalytics(previousAnalyticsData);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to fetch reports";
-      setError(message);
-      setRows([]);
-      setAnalytics(null);
-      setPreviousAnalytics(null);
+    if (!options?.force && analyticsCache[dateKey]) {
+      return;
     }
+    const inflight = analyticsInflightRef.current.get(dateKey);
+    if (inflight) {
+      await inflight;
+      return;
+    }
+    const task = (async () => {
+      if (options?.priority) {
+        setAnalyticsLoading(true);
+      }
+      const res = await fetch(`/api/analytics?date=${encodeURIComponent(dateKey)}`, {
+        cache: "no-store",
+        headers: authHeaders(),
+      });
+      const data = await readJsonSafe<{ data?: AnalyticsData; error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to fetch analytics");
+      }
+      const nextAnalytics = data?.data ?? null;
+      if (!nextAnalytics) {
+        return;
+      }
+      setAnalyticsCache((prev) => ({ ...prev, [dateKey]: nextAnalytics }));
+    })()
+      .catch((e) => {
+        if (options?.priority) {
+          const message = e instanceof Error ? e.message : "Failed to fetch analytics";
+          setError(message);
+        }
+      })
+      .finally(() => {
+        analyticsInflightRef.current.delete(dateKey);
+        if (options?.priority) {
+          setAnalyticsLoading(false);
+        }
+      });
+    analyticsInflightRef.current.set(dateKey, task);
+    await task;
   }
 
   function applyRangeFilter() {
@@ -904,7 +907,7 @@ export default function ReportsPage() {
       }
 
       setSettingsOpen(false);
-      await loadReport();
+      await fetchAnalyticsForDate(ledgerDate, { priority: activeTab === "analytics", force: true });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to save report chart settings";
       setError(message);
@@ -984,15 +987,75 @@ export default function ReportsPage() {
     if (!activeUserId) {
       return;
     }
-    void loadTables();
-  }, [activeUserId]);
-
-  useEffect(() => {
-    if (!activeUserId) {
+    const dateKey = ledgerDate;
+    if (activeTab === "ledger") {
+      void fetchLedgerForDate(dateKey, { priority: true }).then(() => {
+        void fetchAnalyticsForDate(dateKey, { priority: false });
+      });
       return;
     }
-    void loadReport();
-  }, [activeUserId, ledgerScope, ledgerDate, ledgerStartDate, ledgerEndDate, analyticsTableId]);
+    void fetchAnalyticsForDate(dateKey, { priority: true }).then(() => {
+      void fetchLedgerForDate(dateKey, { priority: false });
+    });
+  }, [activeUserId, activeTab, ledgerDate]);
+
+  useEffect(() => {
+    const ledgerData = ledgerCache[ledgerDate];
+    if (ledgerData) {
+      setRows(ledgerData.rows);
+      setSummary(ledgerData.summary);
+      setWindowInfo(ledgerData.window);
+      return;
+    }
+    setRows([]);
+    setSummary({
+      subtotal: 0,
+      net: 0,
+      cash: 0,
+      upi: 0,
+      card: 0,
+      due: 0,
+      dueReceived: 0,
+      dueReceivedCash: 0,
+      dueReceivedUpi: 0,
+      dueReceivedCard: 0,
+      openingDueOutstanding: 0,
+      dueOutstanding: 0,
+      netReceivableChange: 0,
+      collectionTotal: 0,
+      unpaid: 0,
+      discount: 0,
+      total: 0,
+      paid: 0,
+      isBalanced: true,
+      ltpCount: 0,
+      ltpValue: 0,
+      cancelledCount: 0,
+    });
+    setWindowInfo({
+      scope: "day",
+      key: null,
+      start: null,
+      end: null,
+    });
+  }, [ledgerCache, ledgerDate]);
+
+  useEffect(() => {
+    const analyticsData = analyticsCache[ledgerDate] ?? null;
+    setAnalytics(analyticsData);
+    setPreviousAnalytics(null);
+    if (!analyticsData) {
+      setTableOptions([]);
+      return;
+    }
+    const nextOptions = analyticsData.tables
+      .map((table) => ({ id: table.tableId, name: table.tableName }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    setTableOptions(nextOptions);
+    if (analyticsTableId !== "all" && !nextOptions.find((row) => String(row.id) === analyticsTableId)) {
+      setAnalyticsTableId("all");
+    }
+  }, [analyticsCache, ledgerDate, analyticsTableId]);
 
   useEffect(() => {
     if (activeTab === "analytics") {
@@ -1117,6 +1180,11 @@ export default function ReportsPage() {
               <button
                 type="button"
                 onClick={() => setActiveTab("ledger")}
+                onMouseEnter={() => {
+                  if (activeUserId) {
+                    void fetchLedgerForDate(ledgerDate, { priority: false });
+                  }
+                }}
                 className={`rounded-md px-3 py-1 text-xs font-medium ${activeTab === "ledger" ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-200"}`}
               >
                 Ledger
@@ -1124,6 +1192,11 @@ export default function ReportsPage() {
               <button
                 type="button"
                 onClick={() => setActiveTab("analytics")}
+                onMouseEnter={() => {
+                  if (activeUserId) {
+                    void fetchAnalyticsForDate(ledgerDate, { priority: false });
+                  }
+                }}
                 className={`rounded-md px-3 py-1 text-xs font-medium ${activeTab === "analytics" ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-200"}`}
               >
                 Analytics
@@ -1154,6 +1227,12 @@ export default function ReportsPage() {
               Current (10 AM reset)
             </button>
           </div>
+
+          {(activeTab === "ledger" ? ledgerLoading : analyticsLoading) ? (
+            <p className="mt-2 text-xs text-slate-600">
+              Loading {activeTab === "ledger" ? "ledger" : "analytics"}...
+            </p>
+          ) : null}
 
           {ledgerScope === "day" ? (
             <div className="mt-2 flex items-center gap-2 text-xs">

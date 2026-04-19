@@ -1,5 +1,40 @@
 # CueDesk Change Log
 
+Date: 2026-04-20
+
+## Summary (Recent Major Updates)
+- Added dashboard request consolidation and dedupe caching:
+  - `GET /api/dashboard-live` combines tables + unpaid + completed + all sessions.
+  - short in-memory TTL cache for concurrent request sharing.
+- Refactored Reports APIs and page behavior:
+  - new unified endpoints: `GET /api/ledger?date=YYYY-MM-DD`, `GET /api/analytics?date=YYYY-MM-DD`
+  - reports tab lazy loading with background prefetch and per-date caching.
+- Added Customer Insights:
+  - `GET /api/customer-insights`
+  - new page: `/reports/customers`
+  - payer-identity based spend/visits/recency metrics, high-value and at-risk segmentation.
+- Added Daily Closing module:
+  - API: `/api/reports/daily-closing`
+  - page: `/reports/daily-closing`
+  - opening carry-forward logic, business-day aligned calculations, live closing preview.
+- Extended Daily Closing inputs:
+  - food sales (cash/bank/due)
+  - food due-received (cash/bank)
+  - accessories sales (cash/bank/due)
+  - total and summary breakdown updates.
+- Added Expenses module:
+  - APIs: `/api/expenses/categories`, `/api/expenses/categories/[id]`, `/api/expenses/entries`
+  - page: `/reports/expenses` with category management, entry rows, filters, and quick date presets.
+- Added operational scripts:
+  - `backfill:daily-closing`
+  - `backfill:expenses`
+  - `package:server`
+  - benchmark scripts for sequential + concurrent API latency tests.
+
+## Notes
+- Recent docs are now captured in `README.md` under Core Features, Project Structure, Scripts, and Key API Endpoints.
+- Older 2026-04-12 entries remain below for historical setup context.
+
 Date: 2026-04-12
 
 ## Summary

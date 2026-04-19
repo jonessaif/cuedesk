@@ -48,6 +48,29 @@ It is built with Next.js + Prisma + SQLite and keeps backend logic as the single
   - analytics can be filtered table-wise
   - chart settings support global or table-level overrides (`auto/day/hour`, merged hour buckets, include/exclude closed bars)
   - default hourly chart includes a combined `08-11` bucket (cafe closed window)
+  - reports tab-based lazy loading (`ledger`/`analytics`) with date-keyed client cache
+  - background prefetch for inactive report tab (faster tab switches)
+  - consolidated reporting APIs:
+    - `/api/ledger?date=YYYY-MM-DD`
+    - `/api/analytics?date=YYYY-MM-DD`
+  - live dashboard aggregation via `/api/dashboard-live` (single call replacing multiple polling calls)
+  - short in-memory API dedupe cache for concurrent live-dashboard requests
+- Customer Insights:
+  - payer-identity based customer metrics from bill/session/payment data
+  - top customers, high-value segmentation, at-risk detection, action-required view
+  - date-range filter + configurable top-N view
+  - split payer bill allocation by payer percentage with rounded shares
+- Daily Closing:
+  - dedicated `/reports/daily-closing` page and `/api/reports/daily-closing`
+  - auto opening from previous day (prefers previous actual cash if entered)
+  - business-day aligned table sales and due-received calculations
+  - manual food/accessory sales + due-received support (kept separate from table sales)
+  - live closing preview while editing values
+- Expenses:
+  - dedicated `/reports/expenses` page
+  - category CRUD (`/api/expenses/categories`, `/api/expenses/categories/[id]`)
+  - expense entry log (`/api/expenses/entries`) with date/mode/category filters
+  - quick date presets and category-wise totals
 - Auth and security:
   - PIN-based login (`4` digits)
   - mobile numeric keypad with auto-submit at 4 digits
@@ -67,6 +90,30 @@ Main dashboard + ledger + billing/payment UI.
 
 `src/app/api/*`  
 Route handlers for sessions, bills, payments, tables.
+
+`src/app/api/dashboard-live/route.ts`  
+Single aggregated dashboard payload (`tables`, `unpaid`, `completed`, `all`) with short TTL cache.
+
+`src/app/api/ledger/route.ts` and `src/app/api/analytics/route.ts`  
+Unified report APIs used by the Reports page.
+
+`src/app/api/customer-insights/route.ts`  
+Customer-level metrics and risk segments.
+
+`src/app/api/reports/daily-closing/route.ts`  
+Daily closing snapshot and update endpoint.
+
+`src/app/api/expenses/*`  
+Expense categories and entries APIs.
+
+`src/app/reports/customers/page.tsx`  
+Customer insights UI.
+
+`src/app/reports/daily-closing/page.tsx`  
+Daily closing UI.
+
+`src/app/reports/expenses/page.tsx`  
+Expenses management and entry UI.
 
 `src/components/auth-provider.tsx`  
 Global auth store/provider (login, persistence, inactivity timeout, auth headers).
@@ -128,6 +175,13 @@ npm run dev
 - `npm run backfill:bills` - backfill missing `billId` on legacy billed sessions
 - `npm run backfill:business-day-keys` - fill legacy `businessDayKey` values
 - `npm run backfill:ledger-demo` - seed preview ledger/demo data
+- `npm run backfill:daily-closing` - populate historical daily-closing snapshots
+- `npm run backfill:expenses` - seed historical expense categories/entries
+- `npm run package:server` - create deployable server archive for another machine
+
+Utility scripts:
+- `scripts/benchmark-apis.sh` - sequential API benchmark summary
+- `scripts/benchmark-apis-concurrent.sh` - concurrent API benchmark (p50/p95/p99)
 
 ## LAN Usage
 Start server and open from other devices on the same network:
@@ -223,6 +277,22 @@ Notes:
   - Collection: `cash`, `upi`, `card`, `due`, `dueReceived`
   - Status: `paid`, `unpaid`, `total`, `isBalanced`
 - Note: `dueReceived` is informational and already included in `cash`/`upi`/`card`.
+
+## Key API Endpoints
+- Live dashboard:
+  - `GET /api/dashboard-live?scope=current|day|range&date=YYYY-MM-DD&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
+- Reports:
+  - `GET /api/ledger?date=YYYY-MM-DD`
+  - `GET /api/analytics?date=YYYY-MM-DD`
+- Customers:
+  - `GET /api/customer-insights?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&topN=all|<number>`
+- Daily closing:
+  - `GET /api/reports/daily-closing?date=YYYY-MM-DD`
+  - `POST /api/reports/daily-closing` (save manual values)
+- Expenses:
+  - `GET/POST /api/expenses/categories`
+  - `PATCH/DELETE /api/expenses/categories/:id`
+  - `GET/POST /api/expenses/entries`
 
 ## Design Docs
 See:
