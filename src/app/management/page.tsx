@@ -601,6 +601,11 @@ export default function ManagementPage() {
               label: "Bills",
               className: "rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700",
             },
+            {
+              href: "/management/cameras",
+              label: "Cameras",
+              className: "rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700",
+            },
           ]}
           userLabel={`${activeUser.name} (${activeUser.role})`}
           showServerButton={showNativeServerButton}

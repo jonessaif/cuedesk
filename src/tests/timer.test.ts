@@ -19,4 +19,11 @@ describe("Timer logic module", () => {
 
     expect(result).toBe(0);
   });
+
+  it("should return zero for negative elapsed time", () => {
+    const startTime = new Date("2026-04-12T10:05:00.000Z");
+    const now = new Date("2026-04-12T10:00:00.000Z");
+    const result = calculateDurationMinutes(startTime, now);
+    expect(result).toBe(0);
+  });
 });

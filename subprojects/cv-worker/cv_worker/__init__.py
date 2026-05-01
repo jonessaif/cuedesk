@@ -1,0 +1,2 @@
+"""CueDesk OpenCV worker package."""
+

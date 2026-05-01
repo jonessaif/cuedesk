@@ -49,21 +49,13 @@ function formatMoney(value: number | null | undefined): string {
   return String(Math.round(safe));
 }
 
-function todayDateInputValue(): string {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dd = String(now.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 export default function DailyClosingPage() {
   const [isDark, setIsDark] = useState(false);
   const [themeReady, setThemeReady] = useState(false);
   const [activeUser, setActiveUser] = useState<ActiveUser | null>(null);
   const [activeUserId, setActiveUserId] = useState<number | null>(null);
   const [error, setError] = useState("");
-  const [dailyClosingDate, setDailyClosingDate] = useState<string>(todayDateInputValue());
+  const [dailyClosingDate, setDailyClosingDate] = useState<string>("");
   const [dailyClosing, setDailyClosing] = useState<DailyClosingData | null>(null);
   const [dailyClosingLoading, setDailyClosingLoading] = useState(false);
   const [dailyClosingSaving, setDailyClosingSaving] = useState(false);
@@ -120,10 +112,13 @@ export default function DailyClosingPage() {
       return;
     }
     const date = targetDate ?? dailyClosingDate;
+    const url = date
+      ? `/api/reports/daily-closing?date=${encodeURIComponent(date)}`
+      : "/api/reports/daily-closing";
     setDailyClosingLoading(true);
     setDailyClosingError("");
     try {
-      const res = await fetch(`/api/reports/daily-closing?date=${encodeURIComponent(date)}`, {
+      const res = await fetch(url, {
         cache: "no-store",
         headers: authHeaders(),
       });
@@ -134,6 +129,9 @@ export default function DailyClosingPage() {
       const next = data?.data ?? null;
       setDailyClosing(next);
       if (next) {
+        if (!targetDate && next.date !== dailyClosingDate) {
+          setDailyClosingDate(next.date);
+        }
         setDailyClosingForm(next);
       }
     } catch (e) {
@@ -246,10 +244,10 @@ export default function DailyClosingPage() {
   }, []);
 
   useEffect(() => {
-    if (!activeUserId || !dailyClosingDate) {
+    if (!activeUserId) {
       return;
     }
-    void loadDailyClosing(dailyClosingDate);
+    void loadDailyClosing(dailyClosingDate || undefined);
   }, [activeUserId, dailyClosingDate]);
 
   function toggleTheme() {

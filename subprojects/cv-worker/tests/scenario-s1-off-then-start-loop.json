@@ -1,0 +1,52 @@
+{
+  "description": "Looped video: S1 light OFF for long period, brief ON idle, game starts near end, then loop returns to OFF causing end after idle timeout. Other tables stay running.",
+  "scenarios": [
+    {
+      "name": "looped_feed_s1_off_then_start_then_end",
+      "loopStart": 1,
+      "loopEnd": 5000,
+      "mustContain": [
+        {
+          "tableName": "S1",
+          "event": "start",
+          "minCount": 1
+        },
+        {
+          "tableName": "S1",
+          "event": "end",
+          "minCount": 1
+        },
+        {
+          "tableName": "S2",
+          "event": "start",
+          "minCount": 1
+        },
+        {
+          "tableName": "AP",
+          "event": "start",
+          "minCount": 1
+        },
+        {
+          "tableName": "IP",
+          "event": "start",
+          "minCount": 1
+        }
+      ],
+      "mustNotContain": [
+        {
+          "tableName": "S2",
+          "event": "end"
+        },
+        {
+          "tableName": "AP",
+          "event": "end"
+        },
+        {
+          "tableName": "IP",
+          "event": "end"
+        }
+      ]
+    }
+  ]
+}
+

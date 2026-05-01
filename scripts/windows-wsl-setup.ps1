@@ -37,9 +37,17 @@ if (-not ($distros -contains $Distro)) {
 }
 
 Write-Step "Converting project path to WSL path"
-$projectWslPath = (wsl -d $Distro -- wslpath -a "$ProjectWindowsPath").Trim()
+$projectWslPathOutput = @(wsl -d $Distro -- wslpath -a "$ProjectWindowsPath" 2>&1)
+$projectWslPath = ($projectWslPathOutput | Select-Object -First 1)
+if ($null -ne $projectWslPath) {
+  $projectWslPath = $projectWslPath.Trim()
+}
 if ([string]::IsNullOrWhiteSpace($projectWslPath)) {
-  throw "Unable to resolve WSL path for '$ProjectWindowsPath'"
+  $details = ($projectWslPathOutput -join "`n").Trim()
+  if ([string]::IsNullOrWhiteSpace($details)) {
+    $details = "No output returned by wslpath."
+  }
+  throw "Unable to resolve WSL path for '$ProjectWindowsPath'. Try opening Ubuntu once, then run: wsl -d $Distro -- wslpath -a `"$ProjectWindowsPath`". Details: $details"
 }
 Write-Host "Project path in WSL: $projectWslPath"
 

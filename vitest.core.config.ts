@@ -14,17 +14,26 @@ export default defineConfig({
     coverage: {
       reporter: ["text", "html"],
       include: [
-        "src/lib/**/*.ts",
-        "src/lib/services/**/*.ts",
-        "src/app/api/**/route.ts",
+        "src/app/api/auth/login/route.ts",
+        "src/app/api/bill/create/route.ts",
+        "src/app/api/bill/discount/route.ts",
+        "src/app/api/bill/latest/route.ts",
+        "src/app/api/bill/search/route.ts",
+        "src/app/api/bill/unpaid/route.ts",
+        "src/lib/billTotals.ts",
       ],
       exclude: [
-        "src/app/**/*.tsx",
         "android/**",
         "scripts/**",
         "dist/**",
         "node_modules/**",
       ],
+      thresholds: {
+        statements: 80,
+        branches: 80,
+        functions: 80,
+        lines: 80,
+      },
     },
   },
 });

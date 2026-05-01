@@ -1,0 +1,35 @@
+{
+  "description": "Example scenario rules for evaluating cv-worker-debug.jsonl",
+  "scenarios": [
+    {
+      "name": "snooker_active_pool_idle",
+      "loopStart": 1,
+      "loopEnd": 4000,
+      "mustContain": [
+        {
+          "tableName": "S1",
+          "event": "start",
+          "minCount": 1,
+          "maxFirstLoop": 300
+        },
+        {
+          "tableName": "S2",
+          "event": "start",
+          "minCount": 1,
+          "maxFirstLoop": 300
+        }
+      ],
+      "mustNotContain": [
+        {
+          "tableName": "AP",
+          "event": "start"
+        },
+        {
+          "tableName": "IP",
+          "event": "start"
+        }
+      ]
+    }
+  ]
+}
+

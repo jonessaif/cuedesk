@@ -114,4 +114,90 @@ describe("Payer system module", () => {
       },
     });
   });
+
+  it("should reject when session is not found", async () => {
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        update: vi.fn(),
+      },
+    };
+
+    await expect(
+      payerService.assignPayer(prisma as never, {
+        sessionId: 999,
+        payerMode: "single",
+        payerData: { name: "A" },
+      }),
+    ).rejects.toThrow("Session not found");
+  });
+
+  it("should reject when session is not running", async () => {
+    const update = vi.fn();
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 31,
+          status: "completed",
+        }),
+        update,
+      },
+    };
+
+    await expect(
+      payerService.assignPayer(prisma as never, {
+        sessionId: 31,
+        payerMode: "single",
+        payerData: { name: "A" },
+      }),
+    ).rejects.toThrow("Session not running");
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("should reject split mode with non-array payerData", async () => {
+    const update = vi.fn();
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 22,
+          status: "running",
+        }),
+        update,
+      },
+    };
+
+    await expect(
+      payerService.assignPayer(prisma as never, {
+        sessionId: 22,
+        payerMode: "split",
+        payerData: { name: "A", percentage: 100 },
+      }),
+    ).rejects.toThrow("Invalid split percentage");
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("should reject split mode with non-number percentage", async () => {
+    const update = vi.fn();
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 23,
+          status: "running",
+        }),
+        update,
+      },
+    };
+
+    await expect(
+      payerService.assignPayer(prisma as never, {
+        sessionId: 23,
+        payerMode: "split",
+        payerData: [{ name: "A", percentage: "100" }],
+      }),
+    ).rejects.toThrow("Invalid split percentage");
+
+    expect(update).not.toHaveBeenCalled();
+  });
 });
