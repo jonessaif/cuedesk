@@ -44,6 +44,15 @@ describe("Session status helpers", () => {
         effectiveStatus: "billed",
         billId: 10,
         paidAmount: 0,
+        amount: 0,
+      }),
+    ).toBe("Paid");
+
+    expect(
+      getLedgerStatus({
+        effectiveStatus: "billed",
+        billId: 10,
+        paidAmount: 0,
         amount: 100,
       }),
     ).toBe("Billed-Unpaid");
