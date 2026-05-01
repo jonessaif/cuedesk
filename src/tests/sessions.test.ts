@@ -385,7 +385,7 @@ describe("Sessions module", () => {
         overrideStatus: "billed",
         overrideEndTime: new Date("2026-04-12T10:30:00.000Z"),
       }),
-    ).rejects.toThrow("Running overrides allow player name, start time, rate, or payer details");
+    ).rejects.toThrow("Running overrides allow player name, start time, rate, complimentary minutes, or payer details");
 
     expect(createBill).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
@@ -434,6 +434,64 @@ describe("Sessions module", () => {
         data: expect.objectContaining({
           overrideRatePerMin: 8,
           overrideEndTime: new Date("2026-04-12T10:40:00.000Z"),
+        }),
+      }),
+    );
+  });
+
+  it("should support completed session edit for complimentary minutes", async () => {
+    const update = vi.fn().mockResolvedValue({
+      id: 111,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+      amount: 0,
+    });
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 111,
+          tableId: 1,
+          playerName: "A",
+          status: "completed",
+          outcome: "NORMAL",
+          startTime: new Date("2026-04-12T10:00:00.000Z"),
+          endTime: new Date("2026-04-12T11:00:00.000Z"),
+          payerMode: "single",
+          payerData: { name: "A" },
+          billId: null,
+          amount: 600,
+          complimentaryMinutes: 0,
+          complimentaryReason: null,
+        }),
+        update,
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 1,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+      bills: {
+        create: vi.fn(),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    await sessionService.overrideSession(prisma as never, {
+      sessionId: 111,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+    });
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          amount: 0,
+          complimentaryMinutes: 60,
+          complimentaryReason: "Combo",
         }),
       }),
     );
@@ -650,7 +708,7 @@ describe("Sessions module", () => {
         sessionId: 12,
         overrideStatus: "running",
       }),
-    ).rejects.toThrow("Completed overrides allow player name, start time, end time, rate, or payer details");
+    ).rejects.toThrow("Completed overrides allow player name, start time, end time, rate, complimentary minutes, or payer details");
   });
 
   it("should move billed session back to unbilled", async () => {

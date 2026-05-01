@@ -749,6 +749,8 @@ export const sessionService = {
       overrideStartTime?: Date;
       overrideEndTime?: Date;
       overrideRatePerMin?: number;
+      complimentaryMinutes?: number;
+      complimentaryReason?: string | null;
       overridePayerMode?: "none" | "single" | "split";
       overridePayerData?: unknown;
       overrideStatus?: "running" | "completed" | "billed" | "default";
@@ -935,6 +937,9 @@ export const sessionService = {
     const hasOverridePlayerName = overridePlayerName !== undefined;
     const hasOverrideEnd = input.overrideEndTime !== undefined;
     const hasOverrideRate = input.overrideRatePerMin !== undefined;
+    const hasComplimentaryMinutes = input.complimentaryMinutes !== undefined;
+    const hasComplimentaryReason = input.complimentaryReason !== undefined;
+    const hasComplimentary = hasComplimentaryMinutes || hasComplimentaryReason;
     const hasOverridePayer = input.overridePayerMode !== undefined || input.overridePayerData !== undefined;
     const hasOverrideStatus = input.overrideStatus !== undefined && input.overrideStatus !== "default";
     const hasOverrideOutcome = input.overrideOutcome !== undefined;
@@ -942,18 +947,18 @@ export const sessionService = {
 
     if (currentLifecycleState === "Running") {
       if (hasOverrideEnd || hasOverrideStatus || hasOverrideOutcome || hasOverridePaymentModes) {
-        throw new Error("Running overrides allow player name, start time, rate, or payer details");
+        throw new Error("Running overrides allow player name, start time, rate, complimentary minutes, or payer details");
       }
-      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideRate && !hasOverridePayer) {
+      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideRate && !hasOverridePayer && !hasComplimentary) {
         throw new Error("No allowed override fields for running session");
       }
     }
 
     if (currentLifecycleState === "Completed") {
       if (hasOverrideStatus || hasOverridePaymentModes) {
-        throw new Error("Completed overrides allow player name, start time, end time, rate, or payer details");
+        throw new Error("Completed overrides allow player name, start time, end time, rate, complimentary minutes, or payer details");
       }
-      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideEnd && !hasOverrideRate && !hasOverridePayer && !hasOverrideOutcome) {
+      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideEnd && !hasOverrideRate && !hasOverridePayer && !hasOverrideOutcome && !hasComplimentary) {
         throw new Error("No allowed override fields for completed session");
       }
     }
@@ -965,6 +970,7 @@ export const sessionService = {
         hasOverrideStart ||
         hasOverrideEnd ||
         hasOverrideRate ||
+        hasComplimentary ||
         hasOverridePayer ||
         hasOverrideOutcome ||
         hasOverridePaymentModes
@@ -980,6 +986,7 @@ export const sessionService = {
         hasOverrideStart ||
         hasOverrideEnd ||
         hasOverrideRate ||
+        hasComplimentary ||
         hasOverridePayer ||
         hasOverrideOutcome ||
         hasOverridePaymentModes
@@ -1007,8 +1014,12 @@ export const sessionService = {
       input.overrideRatePerMin ??
       session.overrideRatePerMin ??
       table.ratePerMin;
-    const complimentaryMinutes = normalizeComplimentaryMinutes(session.complimentaryMinutes);
-    const complimentaryReason = normalizeComplimentaryReason(session.complimentaryReason);
+    const complimentaryMinutes = normalizeComplimentaryMinutes(
+      input.complimentaryMinutes ?? session.complimentaryMinutes,
+    );
+    const complimentaryReason = hasComplimentaryReason
+      ? normalizeComplimentaryReason(input.complimentaryReason)
+      : normalizeComplimentaryReason(session.complimentaryReason);
     if (complimentaryMinutes > 0 && !complimentaryReason) {
       throw new Error("Complimentary reason is required");
     }
@@ -1152,6 +1163,8 @@ export const sessionService = {
             playerName?: string;
             overrideEndTime?: Date | null;
             overrideRatePerMin?: number;
+            complimentaryMinutes?: number;
+            complimentaryReason?: string | null;
             overridePayerMode?: string;
             overridePayerData?: unknown;
             overrideStatus?: string | null;
@@ -1173,6 +1186,8 @@ export const sessionService = {
         ...(typeof input.overrideRatePerMin === "number"
           ? { overrideRatePerMin: input.overrideRatePerMin }
           : {}),
+        ...(hasComplimentaryMinutes ? { complimentaryMinutes } : {}),
+        ...(hasComplimentaryReason ? { complimentaryReason } : {}),
         ...(input.overridePayerMode !== undefined
           ? { overridePayerMode: input.overridePayerMode }
           : {}),

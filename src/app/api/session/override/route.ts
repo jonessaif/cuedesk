@@ -29,6 +29,8 @@ export async function POST(request: Request) {
       body.overrideStartTime === undefined &&
       body.overrideEndTime === undefined &&
       body.overrideRatePerMin === undefined &&
+      body.complimentaryMinutes === undefined &&
+      body.complimentaryReason === undefined &&
       body.overridePayerMode === undefined &&
       body.overridePayerData === undefined &&
       body.overrideStatus === undefined &&
@@ -54,6 +56,18 @@ export async function POST(request: Request) {
       body.overrideRatePerMin === undefined
         ? undefined
         : Number(body.overrideRatePerMin);
+    const complimentaryMinutes =
+      body.complimentaryMinutes === undefined
+        ? undefined
+        : Number(body.complimentaryMinutes);
+    const complimentaryReason =
+      body.complimentaryReason === undefined
+        ? undefined
+        : body.complimentaryReason === null
+          ? null
+          : typeof body.complimentaryReason === "string"
+            ? body.complimentaryReason.trim()
+            : false;
     const overridePlayerName =
       body.overridePlayerName === undefined
         ? undefined
@@ -92,6 +106,15 @@ export async function POST(request: Request) {
       (!Number.isFinite(overrideRatePerMin) || overrideRatePerMin <= 0)
     ) {
       return Response.json({ error: "Invalid overrideRatePerMin" }, { status: 400 });
+    }
+    if (
+      complimentaryMinutes !== undefined &&
+      (!Number.isFinite(complimentaryMinutes) || complimentaryMinutes < 0)
+    ) {
+      return Response.json({ error: "Invalid complimentaryMinutes" }, { status: 400 });
+    }
+    if (complimentaryReason === false) {
+      return Response.json({ error: "Invalid complimentaryReason" }, { status: 400 });
     }
     if (overridePlayerName === null || (overridePlayerName !== undefined && overridePlayerName === "")) {
       return Response.json({ error: "Invalid overridePlayerName" }, { status: 400 });
@@ -184,6 +207,8 @@ export async function POST(request: Request) {
       overrideStartTime,
       overrideEndTime,
       overrideRatePerMin,
+      complimentaryMinutes,
+      complimentaryReason,
       overridePayerMode,
       overridePayerData,
       overrideStatus,

@@ -1020,6 +1020,8 @@ export default function HomePage() {
   const [overrideEndDate, setOverrideEndDate] = useState(todayDateInputValue());
   const [overrideEndIncludeDate, setOverrideEndIncludeDate] = useState(false);
   const [overrideRatePerMin, setOverrideRatePerMin] = useState("");
+  const [overrideComplimentaryMinutes, setOverrideComplimentaryMinutes] = useState("");
+  const [overrideComplimentaryReason, setOverrideComplimentaryReason] = useState("");
   const [overrideOutcome, setOverrideOutcome] = useState<"NORMAL" | "LTP_LOSS">("NORMAL");
   const [overridePayerMode, setOverridePayerMode] = useState<"none" | "single" | "split">(
     "none",
@@ -2748,6 +2750,10 @@ export default function HomePage() {
     setOverrideRatePerMin(
       session.overrideRatePerMin !== null ? String(session.overrideRatePerMin) : "",
     );
+    setOverrideComplimentaryMinutes(
+      session.complimentaryMinutes > 0 ? String(session.complimentaryMinutes) : "",
+    );
+    setOverrideComplimentaryReason(session.complimentaryReason ?? "");
     setOverrideOutcome(session.outcome === "LTP_LOSS" ? "LTP_LOSS" : "NORMAL");
     const initialPayerMode = session.overridePayerMode ?? session.payerMode;
     setOverridePayerMode(initialPayerMode);
@@ -2878,6 +2884,8 @@ export default function HomePage() {
     const startRaw = overrideStartTime.trim();
     const endRaw = overrideEndTime.trim();
     const rateRaw = overrideRatePerMin.trim();
+    const complimentaryRaw = overrideComplimentaryMinutes.trim();
+    const complimentaryReasonRaw = overrideComplimentaryReason.trim();
     const playerNameRaw = overridePlayerName.trim();
 
     const startDate = startRaw
@@ -2887,6 +2895,7 @@ export default function HomePage() {
       ? buildDateTimeFromParts(endRaw, overrideEndIncludeDate ? overrideEndDate : undefined) ?? undefined
       : undefined;
     const rate = rateRaw ? Number(rateRaw) : undefined;
+    const complimentaryMinutes = complimentaryRaw ? Number(complimentaryRaw) : 0;
 
     if (startRaw && !startDate) {
       pushToast("error", "Please enter a valid start time");
@@ -2905,6 +2914,14 @@ export default function HomePage() {
 
     if (rate !== undefined && (!Number.isFinite(rate) || rate <= 0)) {
       pushToast("error", "Rate must be greater than 0");
+      return;
+    }
+    if (!Number.isFinite(complimentaryMinutes) || complimentaryMinutes < 0) {
+      pushToast("error", "Complimentary minutes must be 0 or more");
+      return;
+    }
+    if (complimentaryMinutes > 0 && !complimentaryReasonRaw) {
+      pushToast("error", "Complimentary reason is required");
       return;
     }
     const currentLifecycle = toLifecycleState(editingSession.state);
@@ -2963,9 +2980,11 @@ export default function HomePage() {
         playerNameRaw === editingSession.playerName &&
         !startDate &&
         rate === undefined &&
+        complimentaryMinutes === editingSession.complimentaryMinutes &&
+        complimentaryReasonRaw === (editingSession.complimentaryReason ?? "") &&
         !includePayerOverride
       ) {
-        pushToast("error", "For running sessions, update player name, start time, rate, or payer");
+        pushToast("error", "For running sessions, update player name, start time, rate, complimentary minutes, or payer");
         return;
       }
       if (playerNameRaw !== editingSession.playerName) {
@@ -2977,6 +2996,13 @@ export default function HomePage() {
       if (rate !== undefined) {
         payload.overrideRatePerMin = rate;
       }
+      if (
+        complimentaryMinutes !== editingSession.complimentaryMinutes ||
+        complimentaryReasonRaw !== (editingSession.complimentaryReason ?? "")
+      ) {
+        payload.complimentaryMinutes = complimentaryMinutes;
+        payload.complimentaryReason = complimentaryReasonRaw || null;
+      }
       if (includePayerOverride) {
         payload.overridePayerMode = overridePayerMode;
         payload.overridePayerData = overridePayerData;
@@ -2987,10 +3013,12 @@ export default function HomePage() {
         !startDate &&
         !endDate &&
         rate === undefined &&
+        complimentaryMinutes === editingSession.complimentaryMinutes &&
+        complimentaryReasonRaw === (editingSession.complimentaryReason ?? "") &&
         overrideOutcome === editingSession.outcome &&
         !includePayerOverride
       ) {
-        pushToast("error", "For completed sessions, update player name, start time, end time, rate, or payer");
+        pushToast("error", "For completed sessions, update player name, start time, end time, rate, complimentary minutes, or payer");
         return;
       }
       if (playerNameRaw !== editingSession.playerName) {
@@ -3004,6 +3032,13 @@ export default function HomePage() {
       }
       if (rate !== undefined) {
         payload.overrideRatePerMin = rate;
+      }
+      if (
+        complimentaryMinutes !== editingSession.complimentaryMinutes ||
+        complimentaryReasonRaw !== (editingSession.complimentaryReason ?? "")
+      ) {
+        payload.complimentaryMinutes = complimentaryMinutes;
+        payload.complimentaryReason = complimentaryReasonRaw || null;
       }
       if (includePayerOverride) {
         payload.overridePayerMode = overridePayerMode;
@@ -4213,6 +4248,46 @@ export default function HomePage() {
                       onChange={(e) => setOverrideRatePerMin(e.target.value)}
                       disabled={overrideBusy}
                       className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                    <label className="mb-1 block text-sm font-medium text-emerald-900">
+                      Complimentary Minutes
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={overrideComplimentaryMinutes}
+                        onChange={(e) => setOverrideComplimentaryMinutes(e.target.value)}
+                        disabled={overrideBusy}
+                        className="w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
+                        placeholder="0"
+                      />
+                      {[60, 120].map((minutes) => (
+                        <button
+                          key={`override-free-${minutes}`}
+                          type="button"
+                          onClick={() => {
+                            setOverrideComplimentaryMinutes(String(minutes));
+                            if (!overrideComplimentaryReason.trim()) {
+                              setOverrideComplimentaryReason("Combo");
+                            }
+                          }}
+                          disabled={overrideBusy}
+                          className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                        >
+                          {minutes}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      value={overrideComplimentaryReason}
+                      onChange={(e) => setOverrideComplimentaryReason(e.target.value)}
+                      disabled={overrideBusy}
+                      className="mt-2 w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
+                      placeholder="Reason, e.g. Combo"
                     />
                   </div>
                   {currentLifecycle === "Completed" ? (
