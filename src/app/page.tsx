@@ -2885,8 +2885,12 @@ export default function HomePage() {
     const endRaw = overrideEndTime.trim();
     const rateRaw = overrideRatePerMin.trim();
     const complimentaryRaw = overrideComplimentaryMinutes.trim();
-    const complimentaryReasonRaw = overrideComplimentaryReason.trim();
     const playerNameRaw = overridePlayerName.trim();
+    const currentLifecycle = toLifecycleState(editingSession.state);
+    const canEditComplimentary = currentLifecycle === "Completed";
+    const complimentaryReasonRaw = canEditComplimentary
+      ? overrideComplimentaryReason.trim()
+      : (editingSession.complimentaryReason ?? "");
 
     const startDate = startRaw
       ? buildDateTimeFromParts(startRaw, overrideStartIncludeDate ? overrideStartDate : undefined) ?? undefined
@@ -2895,7 +2899,9 @@ export default function HomePage() {
       ? buildDateTimeFromParts(endRaw, overrideEndIncludeDate ? overrideEndDate : undefined) ?? undefined
       : undefined;
     const rate = rateRaw ? Number(rateRaw) : undefined;
-    const complimentaryMinutes = complimentaryRaw ? Number(complimentaryRaw) : 0;
+    const complimentaryMinutes = canEditComplimentary
+      ? complimentaryRaw ? Number(complimentaryRaw) : 0
+      : editingSession.complimentaryMinutes;
 
     if (startRaw && !startDate) {
       pushToast("error", "Please enter a valid start time");
@@ -2916,15 +2922,14 @@ export default function HomePage() {
       pushToast("error", "Rate must be greater than 0");
       return;
     }
-    if (!Number.isFinite(complimentaryMinutes) || complimentaryMinutes < 0) {
+    if (canEditComplimentary && (!Number.isFinite(complimentaryMinutes) || complimentaryMinutes < 0)) {
       pushToast("error", "Complimentary minutes must be 0 or more");
       return;
     }
-    if (complimentaryMinutes > 0 && !complimentaryReasonRaw) {
+    if (canEditComplimentary && complimentaryMinutes > 0 && !complimentaryReasonRaw) {
       pushToast("error", "Complimentary reason is required");
       return;
     }
-    const currentLifecycle = toLifecycleState(editingSession.state);
     if ((currentLifecycle === "Running" || currentLifecycle === "Completed") && !playerNameRaw) {
       pushToast("error", "Player name is required");
       return;
@@ -2980,11 +2985,9 @@ export default function HomePage() {
         playerNameRaw === editingSession.playerName &&
         !startDate &&
         rate === undefined &&
-        complimentaryMinutes === editingSession.complimentaryMinutes &&
-        complimentaryReasonRaw === (editingSession.complimentaryReason ?? "") &&
         !includePayerOverride
       ) {
-        pushToast("error", "For running sessions, update player name, start time, rate, complimentary minutes, or payer");
+        pushToast("error", "For running sessions, update player name, start time, rate, or payer");
         return;
       }
       if (playerNameRaw !== editingSession.playerName) {
@@ -2995,13 +2998,6 @@ export default function HomePage() {
       }
       if (rate !== undefined) {
         payload.overrideRatePerMin = rate;
-      }
-      if (
-        complimentaryMinutes !== editingSession.complimentaryMinutes ||
-        complimentaryReasonRaw !== (editingSession.complimentaryReason ?? "")
-      ) {
-        payload.complimentaryMinutes = complimentaryMinutes;
-        payload.complimentaryReason = complimentaryReasonRaw || null;
       }
       if (includePayerOverride) {
         payload.overridePayerMode = overridePayerMode;
@@ -4250,72 +4246,74 @@ export default function HomePage() {
                       className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                     />
                   </div>
-                  <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
-                    <label className="mb-1 block text-sm font-medium text-emerald-900">
-                      Complimentary Minutes
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={overrideComplimentaryMinutes}
-                        onChange={(e) => setOverrideComplimentaryMinutes(e.target.value)}
-                        disabled={overrideBusy}
-                        className="w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
-                        placeholder="0"
-                      />
-                      {[60, 120].map((minutes) => (
-                        <button
-                          key={`override-free-${minutes}`}
-                          type="button"
-                          onClick={() => {
-                            setOverrideComplimentaryMinutes(String(minutes));
-                            if (!overrideComplimentaryReason.trim()) {
-                              setOverrideComplimentaryReason("Combo");
-                            }
-                          }}
-                          disabled={overrideBusy}
-                          className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-                        >
-                          {minutes}
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      value={overrideComplimentaryReason}
-                      onChange={(e) => setOverrideComplimentaryReason(e.target.value)}
-                      disabled={overrideBusy}
-                      className="mt-2 w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
-                      placeholder="Reason, e.g. Combo"
-                    />
-                  </div>
                   {currentLifecycle === "Completed" ? (
-                    <div>
-                      <label className="mb-1 block text-sm text-slate-700">Outcome</label>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setOverrideOutcome("NORMAL")}
+                    <>
+                      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                        <label className="mb-1 block text-sm font-medium text-emerald-900">
+                          Complimentary Minutes
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={overrideComplimentaryMinutes}
+                            onChange={(e) => setOverrideComplimentaryMinutes(e.target.value)}
+                            disabled={overrideBusy}
+                            className="w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
+                            placeholder="0"
+                          />
+                          {[60, 120].map((minutes) => (
+                            <button
+                              key={`override-free-${minutes}`}
+                              type="button"
+                              onClick={() => {
+                                setOverrideComplimentaryMinutes(String(minutes));
+                                if (!overrideComplimentaryReason.trim()) {
+                                  setOverrideComplimentaryReason("Combo");
+                                }
+                              }}
+                              disabled={overrideBusy}
+                              className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                            >
+                              {minutes}
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          value={overrideComplimentaryReason}
+                          onChange={(e) => setOverrideComplimentaryReason(e.target.value)}
                           disabled={overrideBusy}
-                          className={`rounded-md px-3 py-1 text-sm ${
-                            overrideOutcome === "NORMAL" ? "bg-slate-900 text-white" : "bg-slate-200"
-                          }`}
-                        >
-                          Normal
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setOverrideOutcome("LTP_LOSS")}
-                          disabled={overrideBusy}
-                          className={`rounded-md px-3 py-1 text-sm ${
-                            overrideOutcome === "LTP_LOSS" ? "bg-fuchsia-700 text-white" : "bg-slate-200"
-                          }`}
-                        >
-                          LTP Loss
-                        </button>
+                          className="mt-2 w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
+                          placeholder="Reason, e.g. Combo"
+                        />
                       </div>
-                    </div>
+                      <div>
+                        <label className="mb-1 block text-sm text-slate-700">Outcome</label>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setOverrideOutcome("NORMAL")}
+                            disabled={overrideBusy}
+                            className={`rounded-md px-3 py-1 text-sm ${
+                              overrideOutcome === "NORMAL" ? "bg-slate-900 text-white" : "bg-slate-200"
+                            }`}
+                          >
+                            Normal
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOverrideOutcome("LTP_LOSS")}
+                            disabled={overrideBusy}
+                            className={`rounded-md px-3 py-1 text-sm ${
+                              overrideOutcome === "LTP_LOSS" ? "bg-fuchsia-700 text-white" : "bg-slate-200"
+                            }`}
+                          >
+                            LTP Loss
+                          </button>
+                        </div>
+                      </div>
+                    </>
                   ) : null}
                   <div>
                     <label className="mb-1 block text-sm text-slate-700">Payer Details</label>

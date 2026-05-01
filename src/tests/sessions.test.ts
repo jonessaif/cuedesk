@@ -385,7 +385,7 @@ describe("Sessions module", () => {
         overrideStatus: "billed",
         overrideEndTime: new Date("2026-04-12T10:30:00.000Z"),
       }),
-    ).rejects.toThrow("Running overrides allow player name, start time, rate, complimentary minutes, or payer details");
+    ).rejects.toThrow("Running overrides allow player name, start time, rate, or payer details");
 
     expect(createBill).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
@@ -437,6 +437,53 @@ describe("Sessions module", () => {
         }),
       }),
     );
+  });
+
+  it("should reject complimentary minutes edit for running sessions", async () => {
+    const update = vi.fn();
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 110,
+          tableId: 1,
+          playerName: "A",
+          status: "running",
+          outcome: "NORMAL",
+          startTime: new Date("2026-04-12T10:00:00.000Z"),
+          endTime: null,
+          payerMode: "none",
+          payerData: null,
+          billId: null,
+          amount: 0,
+          complimentaryMinutes: 0,
+          complimentaryReason: null,
+        }),
+        update,
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 1,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+      bills: {
+        create: vi.fn(),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    await expect(
+      sessionService.overrideSession(prisma as never, {
+        sessionId: 110,
+        complimentaryMinutes: 60,
+        complimentaryReason: "Combo",
+      }),
+    ).rejects.toThrow("Running overrides allow player name, start time, rate, or payer details");
+
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("should support completed session edit for complimentary minutes", async () => {

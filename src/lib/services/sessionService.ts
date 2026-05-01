@@ -946,10 +946,10 @@ export const sessionService = {
     const hasOverridePaymentModes = input.overridePaymentModes !== undefined;
 
     if (currentLifecycleState === "Running") {
-      if (hasOverrideEnd || hasOverrideStatus || hasOverrideOutcome || hasOverridePaymentModes) {
-        throw new Error("Running overrides allow player name, start time, rate, complimentary minutes, or payer details");
+      if (hasOverrideEnd || hasOverrideStatus || hasOverrideOutcome || hasOverridePaymentModes || hasComplimentary) {
+        throw new Error("Running overrides allow player name, start time, rate, or payer details");
       }
-      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideRate && !hasOverridePayer && !hasComplimentary) {
+      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideRate && !hasOverridePayer) {
         throw new Error("No allowed override fields for running session");
       }
     }
