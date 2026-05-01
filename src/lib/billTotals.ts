@@ -38,7 +38,7 @@ export function getEffectiveBillTotals(input: BillTotalsInput): {
   );
   const paidAmount = roundMoney(typeof input.paidAmount === "number" ? input.paidAmount : 0);
 
-  const totalAmount = roundMoney(input.totalAmount > 0 ? input.totalAmount : sessionsAmount);
+  const totalAmount = roundMoney(sessionsAmount > 0 ? sessionsAmount : input.totalAmount);
   const discountedAmount =
     (input.discountType === "fixed" || input.discountType === "percent") &&
     typeof input.discountedAmount === "number"
