@@ -27,6 +27,8 @@ export type DashboardTable = {
     status: "running" | "completed" | "billed";
     payerMode: "none" | "single" | "split";
     payerData: unknown;
+    complimentaryMinutes: number;
+    complimentaryReason: string | null;
   };
   state:
     | "Free"
@@ -45,6 +47,8 @@ type SessionLike = {
   billId: number | null;
   payerMode: "none" | "single" | "split";
   payerData: unknown;
+  complimentaryMinutes?: number | null;
+  complimentaryReason?: string | null;
   overridePayerMode?: string | null;
   overridePayerData?: unknown;
   overrideStatus?: string | null;
@@ -132,7 +136,7 @@ export async function listTablesWithState(
   }
 
   return tables.map((row) => {
-    const selectedSession = runningByTableId.get(row.id) ?? row.sessions[0];
+    const selectedSession = (runningByTableId.get(row.id) ?? row.sessions[0]) as SessionLike | undefined;
     const assignedSection = sectionByTableId.get(row.id);
     return {
       id: row.id,
@@ -148,6 +152,8 @@ export async function listTablesWithState(
           status: getEffectiveSessionStatus(selectedSession),
           payerMode: getEffectivePayerMode(selectedSession),
           payerData: getEffectivePayerData(selectedSession),
+          complimentaryMinutes: selectedSession.complimentaryMinutes ?? 0,
+          complimentaryReason: selectedSession.complimentaryReason ?? null,
         }
         : undefined,
       state: deriveTableState(selectedSession),

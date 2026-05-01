@@ -19,6 +19,8 @@ type TableRow = {
     startTime?: string;
     payerMode?: "none" | "single" | "split";
     payerData?: unknown;
+    complimentaryMinutes?: number;
+    complimentaryReason?: string | null;
   };
 };
 
@@ -32,6 +34,8 @@ type CompletedSessionRow = {
   tableName?: string;
   playerName?: string;
   durationMinutes?: number;
+  complimentaryMinutes?: number;
+  complimentaryReason?: string | null;
   amount: number;
   payerMode?: "none" | "single" | "split";
   payerData?: unknown;
@@ -49,6 +53,8 @@ type LedgerSessionRow = {
   originalEndTime: string | null;
   endTime: string | null;
   durationMinutes: number;
+  complimentaryMinutes: number;
+  complimentaryReason: string | null;
   originalRatePerMin: number;
   ratePerMin: number;
   amount: number;
@@ -590,7 +596,9 @@ function hasSessionOverrides(row: LedgerSessionRow): boolean {
     row.overridePayerMode !== null ||
     row.overridePayerData !== null ||
     row.overrideStatus !== null ||
-    row.overridePaymentModes !== null
+    row.overridePaymentModes !== null ||
+    row.complimentaryMinutes > 0 ||
+    row.complimentaryReason !== null
   );
 }
 
@@ -620,6 +628,12 @@ function getSessionOverrideDiffs(row: LedgerSessionRow): Array<{ field: string; 
   if (row.overridePaymentModes !== null) {
     diffs.push({ field: "overridePaymentModes", value: row.overridePaymentModes });
   }
+  if (row.complimentaryMinutes > 0) {
+    diffs.push({ field: "complimentaryMinutes", value: row.complimentaryMinutes });
+  }
+  if (row.complimentaryReason) {
+    diffs.push({ field: "complimentaryReason", value: row.complimentaryReason });
+  }
   if (row.cancellationReason) {
     diffs.push({ field: "cancellationReason", value: row.cancellationReason });
   }
@@ -635,6 +649,12 @@ function getHistoryFieldLabel(field: string): string {
   }
   if (field === "overrideRatePerMin") {
     return "Rate";
+  }
+  if (field === "complimentaryMinutes") {
+    return "Complimentary Minutes";
+  }
+  if (field === "complimentaryReason") {
+    return "Complimentary Reason";
   }
   if (field === "overrideStatus") {
     return "Status Action";
@@ -731,6 +751,10 @@ function formatHistoryFieldValue(field: string, value: unknown): string {
 
   if (field === "overrideRatePerMin") {
     return typeof value === "number" ? `${formatMoney(value)}/min` : "-";
+  }
+
+  if (field === "complimentaryMinutes") {
+    return typeof value === "number" ? `${value} min` : "-";
   }
 
   if (field === "overrideStatus") {
@@ -857,10 +881,11 @@ function suggestedPaymentShortcuts(remainingAmount: number): number[] {
 
 function formatLedgerAmountWithDiscount(row: LedgerSessionRow): string {
   const discount = typeof row.sessionDiscount === "number" ? row.sessionDiscount : 0;
+  const complimentary = row.complimentaryMinutes > 0 ? ` (${row.complimentaryMinutes} min free)` : "";
   if (discount <= 0) {
-    return `₹${formatMoney(row.amount)}`;
+    return `₹${formatMoney(row.amount)}${complimentary}`;
   }
-  return `₹${formatMoney(row.amount)} (-₹${formatMoney(discount)}) = ₹${formatMoney(row.finalAmount)}`;
+  return `₹${formatMoney(row.amount)} (-₹${formatMoney(discount)}) = ₹${formatMoney(row.finalAmount)}${complimentary}`;
 }
 
 function getTableSection(name: string): string {
@@ -928,6 +953,8 @@ export default function HomePage() {
   const [endIncludeDate, setEndIncludeDate] = useState(false);
   const [endPayerName, setEndPayerName] = useState("");
   const [endAsLtpLoss, setEndAsLtpLoss] = useState(false);
+  const [endComplimentaryMinutes, setEndComplimentaryMinutes] = useState("");
+  const [endComplimentaryReason, setEndComplimentaryReason] = useState("Combo");
   const [payerTable, setPayerTable] = useState<TableRow | null>(null);
   const [payerMode, setPayerMode] = useState<"single" | "split">("single");
   const [singlePayerName, setSinglePayerName] = useState("");
@@ -1000,6 +1027,8 @@ export default function HomePage() {
   const [overrideEndDate, setOverrideEndDate] = useState(todayDateInputValue());
   const [overrideEndIncludeDate, setOverrideEndIncludeDate] = useState(false);
   const [overrideRatePerMin, setOverrideRatePerMin] = useState("");
+  const [overrideComplimentaryMinutes, setOverrideComplimentaryMinutes] = useState("");
+  const [overrideComplimentaryReason, setOverrideComplimentaryReason] = useState("");
   const [overrideOutcome, setOverrideOutcome] = useState<"NORMAL" | "LTP_LOSS">("NORMAL");
   const [overridePayerMode, setOverridePayerMode] = useState<"none" | "single" | "split">(
     "none",
@@ -1929,6 +1958,12 @@ export default function HomePage() {
     setEndIncludeDate(false);
     setEndPayerName(table.currentSession?.playerName ?? "");
     setEndAsLtpLoss(false);
+    setEndComplimentaryMinutes(
+      table.currentSession?.complimentaryMinutes
+        ? String(table.currentSession.complimentaryMinutes)
+        : "",
+    );
+    setEndComplimentaryReason(table.currentSession?.complimentaryReason ?? "Combo");
   }
 
   function closeEndSession() {
@@ -1971,6 +2006,19 @@ export default function HomePage() {
       }
     }
 
+    const complimentaryMinutes = endComplimentaryMinutes.trim()
+      ? Number(endComplimentaryMinutes)
+      : 0;
+    const complimentaryReason = endComplimentaryReason.trim();
+    if (!Number.isFinite(complimentaryMinutes) || complimentaryMinutes < 0) {
+      pushToast("error", "Complimentary minutes must be 0 or more");
+      return;
+    }
+    if (complimentaryMinutes > 0 && !complimentaryReason) {
+      pushToast("error", "Complimentary reason is required");
+      return;
+    }
+
     let parsedEndTime: Date | null = null;
     if (endTimeInput.trim()) {
       parsedEndTime = buildDateTimeFromParts(
@@ -2004,6 +2052,8 @@ export default function HomePage() {
         body: JSON.stringify({
           tableId,
           outcome: endAsLtpLoss ? "LTP_LOSS" : "NORMAL",
+          complimentaryMinutes,
+          complimentaryReason: complimentaryReason || undefined,
           ...(parsedEndTime ? { endTime: parsedEndTime.toISOString() } : {}),
         }),
       });
@@ -2242,6 +2292,7 @@ export default function HomePage() {
     const payerDisplay = hasPayer ? payerLabel : "⚠ NO PAYER";
     const playerDisplay = truncateToTen(playerLabel);
     const payerCompactDisplay = truncateToTen(payerDisplay);
+    const complimentaryMinutes = table.currentSession?.complimentaryMinutes ?? 0;
 
     if (isFree) {
       return (
@@ -2299,6 +2350,11 @@ export default function HomePage() {
         <p className="mt-0.5 text-base font-semibold" style={{ color: elapsedColor }}>
           ⏱ {elapsed}
         </p>
+        {complimentaryMinutes > 0 ? (
+          <p className="mt-1 text-xs font-semibold text-emerald-700">
+            {complimentaryMinutes} min complimentary
+          </p>
+        ) : null}
         <div className="mt-2 grid w-full grid-cols-2 gap-3">
           <button
             type="button"
@@ -2704,6 +2760,10 @@ export default function HomePage() {
     setOverrideRatePerMin(
       session.overrideRatePerMin !== null ? String(session.overrideRatePerMin) : "",
     );
+    setOverrideComplimentaryMinutes(
+      session.complimentaryMinutes > 0 ? String(session.complimentaryMinutes) : "",
+    );
+    setOverrideComplimentaryReason(session.complimentaryReason ?? "");
     setOverrideOutcome(session.outcome === "LTP_LOSS" ? "LTP_LOSS" : "NORMAL");
     const initialPayerMode = session.overridePayerMode ?? session.payerMode;
     setOverridePayerMode(initialPayerMode);
@@ -2834,6 +2894,8 @@ export default function HomePage() {
     const startRaw = overrideStartTime.trim();
     const endRaw = overrideEndTime.trim();
     const rateRaw = overrideRatePerMin.trim();
+    const complimentaryRaw = overrideComplimentaryMinutes.trim();
+    const complimentaryReasonRaw = overrideComplimentaryReason.trim();
     const playerNameRaw = overridePlayerName.trim();
 
     const startDate = startRaw
@@ -2843,6 +2905,7 @@ export default function HomePage() {
       ? buildDateTimeFromParts(endRaw, overrideEndIncludeDate ? overrideEndDate : undefined) ?? undefined
       : undefined;
     const rate = rateRaw ? Number(rateRaw) : undefined;
+    const complimentaryMinutes = complimentaryRaw ? Number(complimentaryRaw) : 0;
 
     if (startRaw && !startDate) {
       pushToast("error", "Please enter a valid start time");
@@ -2861,6 +2924,14 @@ export default function HomePage() {
 
     if (rate !== undefined && (!Number.isFinite(rate) || rate <= 0)) {
       pushToast("error", "Rate must be greater than 0");
+      return;
+    }
+    if (!Number.isFinite(complimentaryMinutes) || complimentaryMinutes < 0) {
+      pushToast("error", "Complimentary minutes must be 0 or more");
+      return;
+    }
+    if (complimentaryMinutes > 0 && !complimentaryReasonRaw) {
+      pushToast("error", "Complimentary reason is required");
       return;
     }
 
@@ -2920,9 +2991,11 @@ export default function HomePage() {
         playerNameRaw === editingSession.playerName &&
         !startDate &&
         rate === undefined &&
+        complimentaryMinutes === editingSession.complimentaryMinutes &&
+        complimentaryReasonRaw === (editingSession.complimentaryReason ?? "") &&
         !includePayerOverride
       ) {
-        pushToast("error", "For running sessions, update player name, start time, rate, or payer");
+        pushToast("error", "For running sessions, update player name, start time, rate, complimentary minutes, or payer");
         return;
       }
       if (playerNameRaw !== editingSession.playerName) {
@@ -2934,6 +3007,13 @@ export default function HomePage() {
       if (rate !== undefined) {
         payload.overrideRatePerMin = rate;
       }
+      if (
+        complimentaryMinutes !== editingSession.complimentaryMinutes ||
+        complimentaryReasonRaw !== (editingSession.complimentaryReason ?? "")
+      ) {
+        payload.complimentaryMinutes = complimentaryMinutes;
+        payload.complimentaryReason = complimentaryReasonRaw || null;
+      }
       if (includePayerOverride) {
         payload.overridePayerMode = overridePayerMode;
         payload.overridePayerData = overridePayerData;
@@ -2944,10 +3024,12 @@ export default function HomePage() {
         !startDate &&
         !endDate &&
         rate === undefined &&
+        complimentaryMinutes === editingSession.complimentaryMinutes &&
+        complimentaryReasonRaw === (editingSession.complimentaryReason ?? "") &&
         overrideOutcome === editingSession.outcome &&
         !includePayerOverride
       ) {
-        pushToast("error", "For completed sessions, update player name, start time, end time, rate, or payer");
+        pushToast("error", "For completed sessions, update player name, start time, end time, rate, complimentary minutes, or payer");
         return;
       }
       if (playerNameRaw !== editingSession.playerName) {
@@ -2961,6 +3043,13 @@ export default function HomePage() {
       }
       if (rate !== undefined) {
         payload.overrideRatePerMin = rate;
+      }
+      if (
+        complimentaryMinutes !== editingSession.complimentaryMinutes ||
+        complimentaryReasonRaw !== (editingSession.complimentaryReason ?? "")
+      ) {
+        payload.complimentaryMinutes = complimentaryMinutes;
+        payload.complimentaryReason = complimentaryReasonRaw || null;
       }
       if (includePayerOverride) {
         payload.overridePayerMode = overridePayerMode;
@@ -3477,8 +3566,20 @@ export default function HomePage() {
                           {typeof row.durationMinutes === "number"
                             ? `${row.durationMinutes} min`
                             : "-"}
+                          {row.complimentaryMinutes && row.complimentaryMinutes > 0 ? (
+                            <span className="ml-1 text-[11px] font-medium text-emerald-700">
+                              ({row.complimentaryMinutes} free)
+                            </span>
+                          ) : null}
                         </td>
-                        <td className="py-2 pr-3">{formatMoney(row.amount)}</td>
+                        <td className="py-2 pr-3">
+                          {formatMoney(row.amount)}
+                          {row.complimentaryReason ? (
+                            <span className="block text-[11px] text-emerald-700">
+                              {row.complimentaryReason}
+                            </span>
+                          ) : null}
+                        </td>
                         <td className="py-2 pr-3">{formatPayer(row.payerMode, row.payerData)}</td>
                       </tr>
                       );
@@ -4160,6 +4261,46 @@ export default function HomePage() {
                       className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                     />
                   </div>
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                    <label className="mb-1 block text-sm font-medium text-emerald-900">
+                      Complimentary Minutes
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={overrideComplimentaryMinutes}
+                        onChange={(e) => setOverrideComplimentaryMinutes(e.target.value)}
+                        disabled={overrideBusy}
+                        className="w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
+                        placeholder="0"
+                      />
+                      {[60, 120].map((minutes) => (
+                        <button
+                          key={`override-free-${minutes}`}
+                          type="button"
+                          onClick={() => {
+                            setOverrideComplimentaryMinutes(String(minutes));
+                            if (!overrideComplimentaryReason.trim()) {
+                              setOverrideComplimentaryReason("Combo");
+                            }
+                          }}
+                          disabled={overrideBusy}
+                          className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                        >
+                          {minutes}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      value={overrideComplimentaryReason}
+                      onChange={(e) => setOverrideComplimentaryReason(e.target.value)}
+                      disabled={overrideBusy}
+                      className="mt-2 w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
+                      placeholder="Reason, e.g. Combo"
+                    />
+                  </div>
                   {currentLifecycle === "Completed" ? (
                     <div>
                       <label className="mb-1 block text-sm text-slate-700">Outcome</label>
@@ -4539,6 +4680,48 @@ export default function HomePage() {
                 />
                 End as LTP Loss (No charge)
               </label>
+              {!endAsLtpLoss ? (
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                  <label className="mb-1 block text-sm font-medium text-emerald-900">
+                    Complimentary Minutes
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={endComplimentaryMinutes}
+                      onChange={(e) => setEndComplimentaryMinutes(e.target.value)}
+                      disabled={busyTableId === endTable.id}
+                      className="w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
+                      placeholder="0"
+                    />
+                    {[60, 120].map((minutes) => (
+                      <button
+                        key={`end-free-${minutes}`}
+                        type="button"
+                        onClick={() => {
+                          setEndComplimentaryMinutes(String(minutes));
+                          if (!endComplimentaryReason.trim()) {
+                            setEndComplimentaryReason("Combo");
+                          }
+                        }}
+                        disabled={busyTableId === endTable.id}
+                        className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                      >
+                        {minutes}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    value={endComplimentaryReason}
+                    onChange={(e) => setEndComplimentaryReason(e.target.value)}
+                    disabled={busyTableId === endTable.id}
+                    className="mt-2 w-full rounded-md border border-emerald-200 px-3 py-2 text-sm"
+                    placeholder="Reason, e.g. Combo"
+                  />
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-4 flex justify-end gap-2">

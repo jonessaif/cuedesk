@@ -52,6 +52,7 @@ describe("Billing module", () => {
         discountType: null,
         discountValue: null,
         discountedAmount: 300,
+        customerId: null,
       },
     });
     expect(updateMany).toHaveBeenCalledWith({

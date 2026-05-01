@@ -8,10 +8,10 @@ datasource db {
 }
 
 model Table {
-  id         Int       @id @default(autoincrement())
-  name       String    @unique
-  ratePerMin Float
-  sessions   Session[]
+  id                 Int                      @id @default(autoincrement())
+  name               String                   @unique
+  ratePerMin         Float
+  sessions           Session[]
   sectionAssignments TableSectionAssignment[]
   reportChartConfigs ReportChartConfig[]
 
@@ -19,23 +19,23 @@ model Table {
 }
 
 model TableSection {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          Int                      @id @default(autoincrement())
+  name        String                   @unique
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
   assignments TableSectionAssignment[]
 
   @@map("table_sections")
 }
 
 model TableSectionAssignment {
-  id        Int @id @default(autoincrement())
-  tableId   Int @unique
+  id        Int      @id @default(autoincrement())
+  tableId   Int      @unique
   sectionId Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  table   Table       @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  table   Table        @relation(fields: [tableId], references: [id], onDelete: Cascade)
   section TableSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
 
   @@index([sectionId])
@@ -43,30 +43,32 @@ model TableSectionAssignment {
 }
 
 model Session {
-  id        Int         @id @default(autoincrement())
-  tableId   Int
-  businessDayKey String?
-  playerName String
-  payerMode PayerMode   @default(none)
-  payerData Json?
-  overridePayerMode String?
-  overridePayerData Json?
-  overrideStatus String?
+  id                   Int            @id @default(autoincrement())
+  tableId              Int
+  businessDayKey       String?
+  playerName           String
+  payerMode            PayerMode      @default(none)
+  payerData            Json?
+  overridePayerMode    String?
+  overridePayerData    Json?
+  overrideStatus       String?
   overridePaymentModes Json?
-  startTime DateTime
-  endTime   DateTime?
-  overrideStartTime DateTime?
-  overrideEndTime DateTime?
-  overrideRatePerMin Int?
-  status    SessionStatus @default(running)
-  outcome   SessionOutcome @default(NORMAL)
-  amount    Float?
-  cancellationReason String?
-  canceledAt DateTime?
-  billId    Int?
+  startTime            DateTime
+  endTime              DateTime?
+  overrideStartTime    DateTime?
+  overrideEndTime      DateTime?
+  overrideRatePerMin   Int?
+  complimentaryMinutes Int            @default(0)
+  complimentaryReason  String?
+  status               SessionStatus  @default(running)
+  outcome              SessionOutcome @default(NORMAL)
+  amount               Float?
+  cancellationReason   String?
+  canceledAt           DateTime?
+  billId               Int?
 
-  table Table @relation(fields: [tableId], references: [id])
-  bill  Bill? @relation(fields: [billId], references: [id])
+  table          Table                  @relation(fields: [tableId], references: [id])
+  bill           Bill?                  @relation(fields: [billId], references: [id])
   overrideEvents SessionOverrideEvent[]
 
   @@index([tableId, status])
@@ -75,13 +77,13 @@ model Session {
 }
 
 model SessionOverrideEvent {
-  id           Int      @id @default(autoincrement())
-  sessionId    Int
-  action       String   @default("override_update")
+  id            Int      @id @default(autoincrement())
+  sessionId     Int
+  action        String   @default("override_update")
   changedFields Json?
-  beforeData   Json?
-  afterData    Json?
-  createdAt    DateTime @default(now())
+  beforeData    Json?
+  afterData     Json?
+  createdAt     DateTime @default(now())
 
   session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
@@ -90,32 +92,31 @@ model SessionOverrideEvent {
 }
 
 model Bill {
-  id          Int       @id @default(autoincrement())
-  customerId  Int?
-  totalAmount Float
-  discountType String?
-  discountValue Float?
-  discountedAmount Float @default(0)
-  createdAt   DateTime  @default(now())
-  sessions    Session[]
-  payments    Payment[]
-  customer    Customer? @relation(fields: [customerId], references: [id])
+  id               Int       @id @default(autoincrement())
+  customerId       Int?
+  totalAmount      Float
+  discountType     String?
+  discountValue    Float?
+  discountedAmount Float     @default(0)
+  createdAt        DateTime  @default(now())
+  sessions         Session[]
+  payments         Payment[]
+  customer         Customer? @relation(fields: [customerId], references: [id])
 
   @@index([customerId])
-
   @@map("bills")
 }
 
 model Payment {
-  id      Int         @id @default(autoincrement())
-  billId  Int
-  mode    PaymentMode
-  amount  Float
-  createdAt DateTime @default(now())
-  dueCustomerName String?
+  id               Int          @id @default(autoincrement())
+  billId           Int
+  mode             PaymentMode
+  amount           Float
+  createdAt        DateTime     @default(now())
+  dueCustomerName  String?
   dueCustomerPhone String?
-  dueSettledAt DateTime?
-  dueReceivedMode PaymentMode?
+  dueSettledAt     DateTime?
+  dueReceivedMode  PaymentMode?
 
   bill Bill @relation(fields: [billId], references: [id])
 
@@ -124,62 +125,62 @@ model Payment {
 }
 
 model DailyReport {
-  id            Int      @id @default(autoincrement())
-  businessDayKey String  @unique
-  startAt       DateTime
-  endAt         DateTime
-  subtotal      Float
-  discount      Float
-  net           Float
-  cash          Float
-  upi           Float
-  card          Float
-  paid          Float
-  unpaid        Float
-  isBalanced    Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id             Int      @id @default(autoincrement())
+  businessDayKey String   @unique
+  startAt        DateTime
+  endAt          DateTime
+  subtotal       Float
+  discount       Float
+  net            Float
+  cash           Float
+  upi            Float
+  card           Float
+  paid           Float
+  unpaid         Float
+  isBalanced     Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   @@index([businessDayKey])
   @@map("daily_reports")
 }
 
 model DailyClosing {
-  id              Int      @id @default(autoincrement())
-  date            String   @unique
-  openingCash     Float
-  openingBank     Float
-  salesCash       Float
-  salesBank       Float
-  foodSalesCash   Float    @default(0)
-  foodSalesBank   Float    @default(0)
-  foodSalesDue    Float    @default(0)
-  foodDueReceivedCash Float @default(0)
-  foodDueReceivedBank Float @default(0)
-  accessoriesSalesCash Float @default(0)
-  accessoriesSalesBank Float @default(0)
-  accessoriesSalesDue  Float @default(0)
-  dueReceivedCash Float
-  dueReceivedBank Float
-  expenseCash     Float    @default(0)
-  expenseBank     Float    @default(0)
-  newDueTotal     Float    @default(0)
-  closingCash     Float
-  closingBank     Float
-  actualCash      Float?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                   Int      @id @default(autoincrement())
+  date                 String   @unique
+  openingCash          Float
+  openingBank          Float
+  salesCash            Float
+  salesBank            Float
+  foodSalesCash        Float    @default(0)
+  foodSalesBank        Float    @default(0)
+  foodSalesDue         Float    @default(0)
+  foodDueReceivedCash  Float    @default(0)
+  foodDueReceivedBank  Float    @default(0)
+  accessoriesSalesCash Float    @default(0)
+  accessoriesSalesBank Float    @default(0)
+  accessoriesSalesDue  Float    @default(0)
+  dueReceivedCash      Float
+  dueReceivedBank      Float
+  expenseCash          Float    @default(0)
+  expenseBank          Float    @default(0)
+  newDueTotal          Float    @default(0)
+  closingCash          Float
+  closingBank          Float
+  actualCash           Float?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   @@index([date])
   @@map("daily_closing")
 }
 
 model ExpenseCategory {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        Int            @id @default(autoincrement())
+  name      String         @unique
+  isActive  Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
   entries   ExpenseEntry[]
 
   @@index([name])
@@ -187,15 +188,15 @@ model ExpenseCategory {
 }
 
 model ExpenseEntry {
-  id         Int      @id @default(autoincrement())
+  id         Int         @id @default(autoincrement())
   date       String
   categoryId Int
   item       String
   amount     Float
   mode       ExpenseMode
   createdBy  Int
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
 
   category ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   user     User            @relation(fields: [createdBy], references: [id], onDelete: Restrict)
@@ -220,38 +221,38 @@ model Customer {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  name      String
-  pinHash   String
-  role      UserRole @default(operator)
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             Int            @id @default(autoincrement())
+  name           String
+  pinHash        String
+  role           UserRole       @default(operator)
+  isActive       Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
   expenseEntries ExpenseEntry[]
 
-  @@index([name])
   @@unique([pinHash])
+  @@index([name])
   @@map("users")
 }
 
 model AppConfig {
-  id                Int      @id @default(autoincrement())
-  ledgerResetMinutes Int     @default(600)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                 Int      @id @default(autoincrement())
+  ledgerResetMinutes Int      @default(600)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@map("app_config")
 }
 
 model ReportChartConfig {
-  id             Int       @id @default(autoincrement())
-  targetKey      String    @unique
-  tableId        Int?
-  chartMode      ChartMode @default(auto)
+  id               Int       @id @default(autoincrement())
+  targetKey        String    @unique
+  tableId          Int?
+  chartMode        ChartMode @default(auto)
   mergeBucketsJson Json?
-  includeClosed  Boolean   @default(true)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  includeClosed    Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   table Table? @relation(fields: [tableId], references: [id], onDelete: Cascade)
 

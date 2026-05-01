@@ -147,6 +147,63 @@ describe("Sessions module", () => {
     });
   });
 
+  it("should end session with complimentary minutes and only bill additional time", async () => {
+    const now = new Date("2026-04-12T11:15:00.000Z");
+    const startTime = new Date("2026-04-12T10:00:00.000Z");
+    const update = vi.fn().mockResolvedValue({
+      id: 57,
+      tableId: 7,
+      status: "completed",
+      amount: 150,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+      endTime: now,
+    });
+
+    const prisma = {
+      sessions: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: 57,
+          tableId: 7,
+          playerName: "Arjun",
+          status: "running",
+          startTime,
+        }),
+        update,
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 7,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+    };
+
+    const result = await sessionService.endSession(prisma as never, {
+      tableId: 7,
+      now,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      amount: 150,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+    });
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          amount: 150,
+          complimentaryMinutes: 60,
+          complimentaryReason: "Combo",
+        }),
+      }),
+    );
+  });
+
   it("should end session as LTP loss with zero amount", async () => {
     const now = new Date("2026-04-12T10:10:00.000Z");
     const findFirst = vi.fn().mockResolvedValue({
@@ -328,7 +385,7 @@ describe("Sessions module", () => {
         overrideStatus: "billed",
         overrideEndTime: new Date("2026-04-12T10:30:00.000Z"),
       }),
-    ).rejects.toThrow("Running overrides allow player name, start time, rate, or payer details");
+    ).rejects.toThrow("Running overrides allow player name, start time, rate, complimentary minutes, or payer details");
 
     expect(createBill).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
@@ -593,7 +650,7 @@ describe("Sessions module", () => {
         sessionId: 12,
         overrideStatus: "running",
       }),
-    ).rejects.toThrow("Completed overrides allow player name, start time, end time, rate, or payer details");
+    ).rejects.toThrow("Completed overrides allow player name, start time, end time, rate, complimentary minutes, or payer details");
   });
 
   it("should move billed session back to unbilled", async () => {
