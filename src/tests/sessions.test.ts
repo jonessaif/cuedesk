@@ -385,7 +385,7 @@ describe("Sessions module", () => {
         overrideStatus: "billed",
         overrideEndTime: new Date("2026-04-12T10:30:00.000Z"),
       }),
-    ).rejects.toThrow("Running overrides allow player name, start time, rate, complimentary minutes, or payer details");
+    ).rejects.toThrow("Running overrides allow player name, start time, rate, or payer details");
 
     expect(createBill).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
@@ -650,7 +650,7 @@ describe("Sessions module", () => {
         sessionId: 12,
         overrideStatus: "running",
       }),
-    ).rejects.toThrow("Completed overrides allow player name, start time, end time, rate, complimentary minutes, or payer details");
+    ).rejects.toThrow("Completed overrides allow player name, start time, end time, rate, or payer details");
   });
 
   it("should move billed session back to unbilled", async () => {
