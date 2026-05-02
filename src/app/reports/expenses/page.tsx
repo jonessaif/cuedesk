@@ -37,6 +37,8 @@ type CategoryTotal = {
   total: number;
 };
 
+type ExcelCell = string | number | null | undefined | { value: unknown; style?: string };
+
 function todayDateInputValue(): string {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -68,14 +70,32 @@ function escapeExcelCell(value: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
-function buildExcelTable(rows: unknown[][]): string {
+function getExcelCellValue(cell: ExcelCell): unknown {
+  if (cell && typeof cell === "object" && "value" in cell) {
+    return cell.value;
+  }
+  return cell;
+}
+
+function getExcelCellStyle(cell: ExcelCell): string {
+  if (cell && typeof cell === "object" && "style" in cell && typeof cell.style === "string") {
+    return cell.style;
+  }
+  return "";
+}
+
+function buildExcelTable(rows: ExcelCell[][]): string {
   return `<table>${rows.map((row, rowIndex) => {
     const tag = rowIndex === 0 ? "th" : "td";
-    return `<tr>${row.map((cell) => `<${tag}>${escapeExcelCell(cell)}</${tag}>`).join("")}</tr>`;
+    return `<tr>${row.map((cell) => {
+      const style = getExcelCellStyle(cell);
+      const styleAttr = style ? ` style="${escapeExcelCell(style)}"` : "";
+      return `<${tag}${styleAttr}>${escapeExcelCell(getExcelCellValue(cell))}</${tag}>`;
+    }).join("")}</tr>`;
   }).join("")}</table>`;
 }
 
-function downloadExcelWorkbook(filename: string, title: string, sections: Array<{ title: string; rows: unknown[][] }>) {
+function downloadExcelWorkbook(filename: string, title: string, sections: Array<{ title: string; rows: ExcelCell[][] }>) {
   if (typeof window === "undefined") {
     return;
   }
@@ -84,8 +104,9 @@ function downloadExcelWorkbook(filename: string, title: string, sections: Array<
       body { font-family: Arial, sans-serif; }
       table { border-collapse: collapse; margin-bottom: 18px; }
       th, td { border: 1px solid #94a3b8; padding: 6px; }
-      th { background: #e2e8f0; font-weight: 700; }
-      h2 { margin: 18px 0 8px; }
+      th { background: #1f2937; color: #ffffff; font-weight: 700; }
+      h1 { color: #0f172a; }
+      h2 { color: #0f766e; margin: 18px 0 8px; }
     </style>
   </head><body><h1>${escapeExcelCell(title)}</h1>${sections.map((section) => (
     `<h2>${escapeExcelCell(section.title)}</h2>${buildExcelTable(section.rows)}`
@@ -156,6 +177,16 @@ export default function ExpensesPage() {
     return "UPI Other";
   }
 
+  function excelExpenseModeStyle(mode: ExpenseMode): string {
+    if (mode === "cash") {
+      return "background:#dcfce7;color:#166534;font-weight:700;";
+    }
+    if (mode === "bank") {
+      return "background:#dbeafe;color:#1e40af;font-weight:700;";
+    }
+    return "background:#fef3c7;color:#92400e;font-weight:700;";
+  }
+
   function downloadExpensesExcel() {
     const periodLabel = fromDate === toDate ? fromDate : `${fromDate}_to_${toDate}`;
     downloadExcelWorkbook(
@@ -169,14 +200,20 @@ export default function ExpensesPage() {
             ["Cash", cashTotal],
             ["Bank", bankTotal],
             ["UPI Other", upiOtherTotal],
-            ["Total Expense", totalExpense],
+            [
+              { value: "Total Expense", style: "background:#fef3c7;font-weight:700;" },
+              { value: totalExpense, style: "background:#fef3c7;font-weight:700;" },
+            ],
           ],
         },
         {
           title: "Category Totals",
           rows: [
             ["Category", "Total"],
-            ...categoryTotals.map((row) => [row.category_name, row.total]),
+            ...categoryTotals.map((row) => [
+              { value: row.category_name, style: "background:#f8fafc;font-weight:700;" },
+              row.total,
+            ]),
           ],
         },
         {
@@ -187,7 +224,7 @@ export default function ExpensesPage() {
               entry.date,
               entry.category_name,
               entry.item,
-              formatExpenseMode(entry.mode),
+              { value: formatExpenseMode(entry.mode), style: excelExpenseModeStyle(entry.mode) },
               entry.amount,
               entry.created_by_user_name,
               formatDateTime(entry.created_at),

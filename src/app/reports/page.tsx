@@ -206,6 +206,8 @@ type ReportQueryState = {
   defaultWindow: LedgerWindow;
 };
 
+type ExcelCell = string | number | null | undefined | { value: unknown; style?: string };
+
 const DEFAULT_MERGE_BUCKETS: MergeBucket[] = [{ startHour: 8, endHour: 11, label: "08-11" }];
 const DEFAULT_CHART_PREFERENCES: ChartPreferences = {
   revenueSeries: {
@@ -329,14 +331,32 @@ function escapeExcelCell(value: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
-function buildExcelTable(rows: unknown[][]): string {
+function getExcelCellValue(cell: ExcelCell): unknown {
+  if (cell && typeof cell === "object" && "value" in cell) {
+    return cell.value;
+  }
+  return cell;
+}
+
+function getExcelCellStyle(cell: ExcelCell): string {
+  if (cell && typeof cell === "object" && "style" in cell && typeof cell.style === "string") {
+    return cell.style;
+  }
+  return "";
+}
+
+function buildExcelTable(rows: ExcelCell[][]): string {
   return `<table>${rows.map((row, rowIndex) => {
     const tag = rowIndex === 0 ? "th" : "td";
-    return `<tr>${row.map((cell) => `<${tag}>${escapeExcelCell(cell)}</${tag}>`).join("")}</tr>`;
+    return `<tr>${row.map((cell) => {
+      const style = getExcelCellStyle(cell);
+      const styleAttr = style ? ` style="${escapeExcelCell(style)}"` : "";
+      return `<${tag}${styleAttr}>${escapeExcelCell(getExcelCellValue(cell))}</${tag}>`;
+    }).join("")}</tr>`;
   }).join("")}</table>`;
 }
 
-function downloadExcelWorkbook(filename: string, title: string, sections: Array<{ title: string; rows: unknown[][] }>) {
+function downloadExcelWorkbook(filename: string, title: string, sections: Array<{ title: string; rows: ExcelCell[][] }>) {
   if (typeof window === "undefined") {
     return;
   }
@@ -345,8 +365,9 @@ function downloadExcelWorkbook(filename: string, title: string, sections: Array<
       body { font-family: Arial, sans-serif; }
       table { border-collapse: collapse; margin-bottom: 18px; }
       th, td { border: 1px solid #94a3b8; padding: 6px; }
-      th { background: #e2e8f0; font-weight: 700; }
-      h2 { margin: 18px 0 8px; }
+      th { background: #1f2937; color: #ffffff; font-weight: 700; }
+      h1 { color: #0f172a; }
+      h2 { color: #0f766e; margin: 18px 0 8px; }
     </style>
   </head><body><h1>${escapeExcelCell(title)}</h1>${sections.map((section) => (
     `<h2>${escapeExcelCell(section.title)}</h2>${buildExcelTable(section.rows)}`
@@ -360,6 +381,25 @@ function downloadExcelWorkbook(filename: string, title: string, sections: Array<
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
+}
+
+function excelLedgerStatusStyle(state: LedgerSessionRow["state"]): string {
+  if (state === "Paid") {
+    return "background:#dcfce7;color:#166534;font-weight:700;";
+  }
+  if (state === "Billed-Unpaid" || state === "Partially-Paid") {
+    return "background:#ffedd5;color:#9a3412;font-weight:700;";
+  }
+  if (state === "LTP-Loss") {
+    return "background:#fae8ff;color:#86198f;font-weight:700;";
+  }
+  if (state === "Cancelled") {
+    return "background:#fee2e2;color:#991b1b;font-weight:700;";
+  }
+  if (state === "Running") {
+    return "background:#fef9c3;color:#854d0e;font-weight:700;";
+  }
+  return "background:#dbeafe;color:#1e40af;font-weight:700;";
 }
 
 function formatRate(value: number | null | undefined, tableName?: string): string {
@@ -915,15 +955,24 @@ export default function ReportsPage() {
             ["Metric", "Value"],
             ["Session Subtotal", summary.subtotal],
             ["Discount", summary.discount],
-            ["Net Session Revenue", summary.net],
+            [
+              { value: "Net Session Revenue", style: "background:#fef3c7;font-weight:700;" },
+              { value: summary.net, style: "background:#fef3c7;font-weight:700;" },
+            ],
             ["Cash In", summary.cash],
             ["UPI In", summary.upi],
             ["Card In", summary.card],
-            ["Total Cash Collected", summary.collectionTotal],
+            [
+              { value: "Total Cash Collected", style: "background:#dcfce7;font-weight:700;" },
+              { value: summary.collectionTotal, style: "background:#dcfce7;font-weight:700;" },
+            ],
             ["Old Due Recovery", summary.dueReceived],
             ["Due Raised", summary.due],
             ["Opening Due", summary.openingDueOutstanding],
-            ["Due Outstanding", summary.dueOutstanding],
+            [
+              { value: "Due Outstanding", style: "background:#fee2e2;font-weight:700;" },
+              { value: summary.dueOutstanding, style: "background:#fee2e2;font-weight:700;" },
+            ],
             ["Net Receivable Change", summary.netReceivableChange],
             ["Unpaid", summary.unpaid],
             ["LTP Sessions", summary.ltpCount],
@@ -964,7 +1013,7 @@ export default function ReportsPage() {
               row.sessionDiscount,
               row.finalAmount,
               row.effectivePaid,
-              ledgerStatusText(row.state),
+              { value: ledgerStatusText(row.state), style: excelLedgerStatusStyle(row.state) },
               row.paymentModes.length > 0 ? row.paymentModes.join(", ") : "-",
               row.paymentSplit.length > 0
                 ? row.paymentSplit.map((entry) => `${entry.mode}: ${entry.amount}`).join(", ")
