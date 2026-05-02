@@ -195,16 +195,38 @@ model ExpenseEntry {
   amount     Float
   mode       ExpenseMode
   createdBy  Int
+  isDeleted  Boolean     @default(false)
+  deletedAt  DateTime?
+  deletedBy  Int?
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
 
   category ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   user     User            @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  events   ExpenseEntryEvent[]
 
   @@index([date, mode])
+  @@index([isDeleted])
   @@index([categoryId])
   @@index([createdBy])
   @@map("expense_entries")
+}
+
+model ExpenseEntryEvent {
+  id            Int      @id @default(autoincrement())
+  entryId       Int
+  action        String
+  changedFields Json?
+  beforeData    Json?
+  afterData     Json?
+  changedBy     Int?
+  changedByName String?
+  createdAt     DateTime @default(now())
+
+  entry ExpenseEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@index([entryId, createdAt])
+  @@map("expense_entry_events")
 }
 
 model Customer {

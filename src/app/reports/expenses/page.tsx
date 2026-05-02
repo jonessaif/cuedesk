@@ -23,6 +23,8 @@ type ExpenseEntry = {
   item: string;
   amount: number;
   mode: ExpenseMode;
+  is_deleted: boolean;
+  deleted_at: string | null;
   category_id: number;
   category_name: string;
   created_by_user_name: string;
@@ -38,6 +40,14 @@ type CategoryTotal = {
 };
 
 type ExcelCell = string | number | null | undefined | { value: unknown; style?: string };
+
+type ExpenseHistoryEvent = {
+  id: number;
+  action: "edit" | "delete" | string;
+  changed_fields: Array<{ field: string; before: unknown; after: unknown }> | unknown;
+  changed_by_name: string;
+  created_at: string;
+};
 
 function todayDateInputValue(): string {
   const now = new Date();
@@ -163,6 +173,10 @@ export default function ExpensesPage() {
   const [editEntryAmount, setEditEntryAmount] = useState("");
   const [editEntryMode, setEditEntryMode] = useState<ExpenseMode>("cash");
   const [entryActionBusyId, setEntryActionBusyId] = useState<number | null>(null);
+  const [historyEntry, setHistoryEntry] = useState<ExpenseEntry | null>(null);
+  const [historyEvents, setHistoryEvents] = useState<ExpenseHistoryEvent[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
 
   const showNativeServerButton = themeReady && isNativeServerSetupAvailable();
   const totalExpense = cashTotal + bankTotal + upiOtherTotal;
@@ -219,13 +233,14 @@ export default function ExpensesPage() {
         {
           title: "Expense Entries",
           rows: [
-            ["Date", "Category", "Item", "Mode", "Amount", "Added By", "Time"],
+            ["Date", "Category", "Item", "Mode", "Amount", "Status", "Added By", "Time"],
             ...entries.map((entry) => [
               entry.date,
               entry.category_name,
               entry.item,
               { value: formatExpenseMode(entry.mode), style: excelExpenseModeStyle(entry.mode) },
               entry.amount,
+              entry.is_deleted ? "Deleted" : "Active",
               entry.created_by_user_name,
               formatDateTime(entry.created_at),
             ]),
@@ -502,7 +517,7 @@ export default function ExpensesPage() {
     if (!activeUserId || entryActionBusyId !== null) {
       return;
     }
-    if (!window.confirm(`Delete expense "${entry.item}" for ₹${entry.amount}?`)) {
+    if (!window.confirm(`Mark expense "${entry.item}" for ₹${entry.amount} as deleted? It will stay visible in history.`)) {
       return;
     }
     setEntryActionBusyId(entry.id);
@@ -525,6 +540,81 @@ export default function ExpensesPage() {
     } finally {
       setEntryActionBusyId(null);
     }
+  }
+
+  async function openExpenseHistory(entry: ExpenseEntry) {
+    if (!activeUserId) {
+      return;
+    }
+    setHistoryEntry(entry);
+    setHistoryEvents([]);
+    setHistoryError("");
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/expenses/entries/${entry.id}/history`, {
+        cache: "no-store",
+        headers: authHeaders(),
+      });
+      const data = await readJsonSafe<{ data?: ExpenseHistoryEvent[]; error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to load expense history");
+      }
+      setHistoryEvents(data?.data ?? []);
+    } catch (e) {
+      setHistoryError(e instanceof Error ? e.message : "Failed to load expense history");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function closeExpenseHistory() {
+    setHistoryEntry(null);
+    setHistoryEvents([]);
+    setHistoryError("");
+  }
+
+  function formatHistoryField(field: string): string {
+    if (field === "categoryId" || field === "categoryName") {
+      return "Category";
+    }
+    if (field === "isDeleted") {
+      return "Status";
+    }
+    if (field === "mode") {
+      return "Mode";
+    }
+    if (field === "amount") {
+      return "Amount";
+    }
+    if (field === "date") {
+      return "Date";
+    }
+    if (field === "item") {
+      return "Item";
+    }
+    return field;
+  }
+
+  function formatHistoryValue(value: unknown): string {
+    if (value === true) {
+      return "Deleted";
+    }
+    if (value === false) {
+      return "Active";
+    }
+    if (value === "upi_other") {
+      return "UPI Other";
+    }
+    return String(value ?? "-");
+  }
+
+  function getHistoryDiffs(event: ExpenseHistoryEvent): Array<{ field: string; before: unknown; after: unknown }> {
+    return Array.isArray(event.changed_fields)
+      ? event.changed_fields.filter((diff): diff is { field: string; before: unknown; after: unknown } => {
+        const candidate = diff as { field?: unknown };
+        return typeof candidate.field === "string";
+      })
+      : [];
   }
 
   function toggleFilterCategory(id: number) {
@@ -687,6 +777,7 @@ export default function ExpensesPage() {
   function renderExpenseEntryRow(entry: ExpenseEntry, showDate: boolean) {
     const isEditing = editingEntryId === entry.id;
     const busy = entryActionBusyId === entry.id;
+    const deleted = entry.is_deleted;
     const categoryOptions = categories.filter(
       (category) => category.isActive || category.id === entry.category_id,
     );
@@ -749,6 +840,11 @@ export default function ExpensesPage() {
               className="w-24 rounded border border-slate-300 bg-white px-2 py-1 text-right"
             />
           </td>
+          <td className="px-2 py-2">
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+              Active
+            </span>
+          </td>
           <td className="px-2 py-2">{entry.created_by_user_name}</td>
           <td className="px-2 py-2">{formatDateTime(entry.created_at)}</td>
           <td className="px-2 py-2">
@@ -776,12 +872,23 @@ export default function ExpensesPage() {
     }
 
     return (
-      <tr key={entry.id} className="border-t border-slate-200">
+      <tr key={entry.id} className={`border-t border-slate-200 ${deleted ? "bg-rose-50 text-slate-500" : ""}`}>
         {showDate ? <td className="px-2 py-2">{entry.date}</td> : null}
-        <td className="px-2 py-2">{entry.category_name}</td>
-        <td className="px-2 py-2">{entry.item}</td>
+        <td className={`px-2 py-2 ${deleted ? "line-through" : ""}`}>{entry.category_name}</td>
+        <td className={`px-2 py-2 ${deleted ? "line-through" : ""}`}>{entry.item}</td>
         <td className="px-2 py-2">{formatExpenseMode(entry.mode)}</td>
-        <td className="px-2 py-2 text-right font-semibold">₹{entry.amount}</td>
+        <td className={`px-2 py-2 text-right font-semibold ${deleted ? "line-through" : ""}`}>₹{entry.amount}</td>
+        <td className="px-2 py-2">
+          {deleted ? (
+            <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+              Deleted
+            </span>
+          ) : (
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+              Active
+            </span>
+          )}
+        </td>
         <td className="px-2 py-2">{entry.created_by_user_name}</td>
         <td className="px-2 py-2">{formatDateTime(entry.created_at)}</td>
         <td className="px-2 py-2">
@@ -789,7 +896,7 @@ export default function ExpensesPage() {
             <button
               type="button"
               onClick={() => beginEditExpense(entry)}
-              disabled={entryActionBusyId !== null}
+              disabled={entryActionBusyId !== null || deleted}
               className="rounded bg-indigo-600 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
             >
               Edit
@@ -797,10 +904,18 @@ export default function ExpensesPage() {
             <button
               type="button"
               onClick={() => void deleteExpenseRow(entry)}
-              disabled={entryActionBusyId !== null}
+              disabled={entryActionBusyId !== null || deleted}
               className="rounded bg-rose-700 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
             >
               {busy ? "Deleting..." : "Delete"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void openExpenseHistory(entry)}
+              disabled={entryActionBusyId !== null}
+              className="rounded bg-slate-700 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+            >
+              History
             </button>
           </div>
         </td>
@@ -1067,6 +1182,7 @@ export default function ExpensesPage() {
                       <th className="px-2 py-2 text-left font-semibold">Item</th>
                       <th className="px-2 py-2 text-left font-semibold">Mode</th>
                       <th className="px-2 py-2 text-right font-semibold">Amount</th>
+                      <th className="px-2 py-2 text-left font-semibold">Status</th>
                       <th className="px-2 py-2 text-left font-semibold">Added By</th>
                       <th className="px-2 py-2 text-left font-semibold">Time</th>
                       <th className="px-2 py-2 text-left font-semibold">Action</th>
@@ -1074,9 +1190,9 @@ export default function ExpensesPage() {
                   </thead>
                   <tbody>
                     {loading ? (
-                      <tr><td colSpan={7} className="px-2 py-3 text-center text-slate-500">Loading...</td></tr>
+                      <tr><td colSpan={8} className="px-2 py-3 text-center text-slate-500">Loading...</td></tr>
                     ) : addModeEntries.length === 0 ? (
-                      <tr><td colSpan={7} className="px-2 py-3 text-center text-slate-500">No entries for this day.</td></tr>
+                      <tr><td colSpan={8} className="px-2 py-3 text-center text-slate-500">No entries for this day.</td></tr>
                     ) : addModeEntries.map((entry) => renderExpenseEntryRow(entry, false))}
                   </tbody>
                 </table>
@@ -1214,6 +1330,7 @@ export default function ExpensesPage() {
                         <th className="px-2 py-2 text-left font-semibold">Item</th>
                         <th className="px-2 py-2 text-left font-semibold">Mode</th>
                         <th className="px-2 py-2 text-right font-semibold">Amount</th>
+                        <th className="px-2 py-2 text-left font-semibold">Status</th>
                         <th className="px-2 py-2 text-left font-semibold">Added By</th>
                         <th className="px-2 py-2 text-left font-semibold">Time</th>
                         <th className="px-2 py-2 text-left font-semibold">Action</th>
@@ -1221,9 +1338,9 @@ export default function ExpensesPage() {
                     </thead>
                     <tbody>
                       {loading ? (
-                        <tr><td colSpan={8} className="px-2 py-3 text-center text-slate-500">Loading...</td></tr>
+                        <tr><td colSpan={9} className="px-2 py-3 text-center text-slate-500">Loading...</td></tr>
                       ) : entries.length === 0 ? (
-                        <tr><td colSpan={8} className="px-2 py-3 text-center text-slate-500">No entries for selected filters.</td></tr>
+                        <tr><td colSpan={9} className="px-2 py-3 text-center text-slate-500">No entries for selected filters.</td></tr>
                       ) : entries.map((entry) => renderExpenseEntryRow(entry, true))}
                     </tbody>
                   </table>
@@ -1232,6 +1349,70 @@ export default function ExpensesPage() {
             </>
           )}
         </section>
+
+        {historyEntry ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-2xl rounded-lg bg-white p-4 shadow-xl">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-semibold text-slate-900">Expense History</h3>
+                  <p className="mt-1 text-xs text-slate-600">
+                    #{historyEntry.id} · {historyEntry.item} · ₹{historyEntry.amount}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeExpenseHistory}
+                  className="rounded bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-800"
+                >
+                  Close
+                </button>
+              </div>
+
+              {historyLoading ? (
+                <p className="mt-3 text-sm text-slate-600">Loading history...</p>
+              ) : null}
+              {historyError ? (
+                <p className="mt-3 rounded-md bg-red-100 px-2 py-1 text-sm text-red-700">{historyError}</p>
+              ) : null}
+              {!historyLoading && !historyError && historyEvents.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-600">No edit or delete history for this expense.</p>
+              ) : null}
+              {!historyLoading && !historyError && historyEvents.length > 0 ? (
+                <div className="mt-3 max-h-96 space-y-2 overflow-auto pr-1">
+                  {historyEvents.map((event) => {
+                    const diffs = getHistoryDiffs(event);
+                    return (
+                      <div key={event.id} className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-800">
+                            {event.action === "delete" ? "Deleted" : "Edited"}
+                          </p>
+                          <p className="text-xs text-slate-600">{formatDateTime(event.created_at)}</p>
+                        </div>
+                        <p className="mt-1 text-xs text-slate-600">
+                          By: {event.changed_by_name || "System"}
+                        </p>
+                        <div className="mt-2 space-y-1 rounded bg-white p-2 text-xs">
+                          {diffs.length === 0 ? (
+                            <p className="text-slate-500">No field-level details available.</p>
+                          ) : diffs.map((diff) => (
+                            <p key={`${event.id}-${diff.field}`} className="text-slate-700">
+                              <span className="font-semibold">{formatHistoryField(diff.field)}:</span>{" "}
+                              <span className="text-slate-500">{formatHistoryValue(diff.before)}</span>{" "}
+                              {"->"}{" "}
+                              <span className="font-semibold text-slate-900">{formatHistoryValue(diff.after)}</span>
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </div>
     </main>
   );

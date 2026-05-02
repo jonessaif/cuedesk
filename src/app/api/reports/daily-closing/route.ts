@@ -199,12 +199,12 @@ async function computeDailyClosingSnapshot(args: {
     const expenseRows = await (
       expenseEntryModel as {
         findMany: (args: {
-          where: { date: string };
+          where: { date: string; isDeleted?: boolean };
           select: { amount: true; mode: true };
         }) => Promise<Array<{ amount: number; mode: "cash" | "bank" | "upi_other" }>>;
       }
     ).findMany({
-      where: { date: args.dateKey },
+      where: { date: args.dateKey, isDeleted: false },
       select: { amount: true, mode: true },
     });
     expenseCash = roundMoney(

@@ -48,6 +48,8 @@ export async function GET(request: Request) {
             item: true;
             amount: true;
             mode: true;
+            isDeleted: true;
+            deletedAt: true;
             createdAt: true;
             category: { select: { id: true; name: true } };
             user: { select: { id: true; name: true } };
@@ -58,6 +60,8 @@ export async function GET(request: Request) {
           item: string;
           amount: number;
           mode: ExpenseModeInput;
+          isDeleted?: boolean;
+          deletedAt?: Date | null;
           createdAt: Date;
           category: { id: number; name: string };
           user: { id: number; name: string };
@@ -82,21 +86,26 @@ export async function GET(request: Request) {
         item: true,
         amount: true,
         mode: true,
+        isDeleted: true,
+        deletedAt: true,
         createdAt: true,
         category: { select: { id: true, name: true } },
         user: { select: { id: true, name: true } },
       },
     });
 
-    const cash = Math.round(rows.filter((row) => row.mode === "cash").reduce((sum, row) => sum + row.amount, 0));
-    const bank = Math.round(rows.filter((row) => row.mode === "bank").reduce((sum, row) => sum + row.amount, 0));
-    const upi_other = Math.round(rows.filter((row) => row.mode === "upi_other").reduce((sum, row) => sum + row.amount, 0));
+    const activeRows = rows.filter((row) => !row.isDeleted);
+    const cash = Math.round(activeRows.filter((row) => row.mode === "cash").reduce((sum, row) => sum + row.amount, 0));
+    const bank = Math.round(activeRows.filter((row) => row.mode === "bank").reduce((sum, row) => sum + row.amount, 0));
+    const upi_other = Math.round(activeRows.filter((row) => row.mode === "upi_other").reduce((sum, row) => sum + row.amount, 0));
     const normalizedRows = rows.map((row) => ({
         id: row.id,
         date: row.date,
         item: row.item,
         amount: Math.round(row.amount),
         mode: row.mode,
+        is_deleted: Boolean(row.isDeleted),
+        deleted_at: row.deletedAt ?? null,
         category_id: row.category.id,
         category_name: row.category.name,
         created_by_user_id: row.user.id,
@@ -105,6 +114,9 @@ export async function GET(request: Request) {
       }));
     const categoryTotalsMap = new Map<number, { category_id: number; category_name: string; total: number }>();
     for (const row of normalizedRows) {
+      if (row.is_deleted) {
+        continue;
+      }
       const current = categoryTotalsMap.get(row.category_id);
       if (current) {
         current.total += row.amount;

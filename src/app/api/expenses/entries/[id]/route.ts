@@ -3,6 +3,16 @@ import { prisma } from "@/lib/prisma";
 
 type ExpenseModeInput = "cash" | "bank" | "upi_other";
 
+type ExpenseSnapshot = {
+  date: string;
+  categoryId: number;
+  categoryName: string;
+  item: string;
+  amount: number;
+  mode: ExpenseModeInput;
+  isDeleted: boolean;
+};
+
 function parseId(raw: string): number | null {
   const id = Number(raw);
   if (!Number.isInteger(id) || id <= 0) {
@@ -19,16 +29,37 @@ function isExpenseMode(value: unknown): value is ExpenseModeInput {
   return value === "cash" || value === "bank" || value === "upi_other";
 }
 
+function buildDiffEntries(before: ExpenseSnapshot, after: ExpenseSnapshot): Array<{ field: string; before: unknown; after: unknown }> {
+  const fields: Array<keyof ExpenseSnapshot> = [
+    "date",
+    "categoryId",
+    "categoryName",
+    "item",
+    "amount",
+    "mode",
+    "isDeleted",
+  ];
+  const diffs: Array<{ field: string; before: unknown; after: unknown }> = [];
+  for (const field of fields) {
+    if (before[field] !== after[field]) {
+      diffs.push({ field, before: before[field], after: after[field] });
+    }
+  }
+  return diffs;
+}
+
 export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   try {
-    await requireOperatorOrAdmin(prisma, request);
+    const actor = await requireOperatorOrAdmin(prisma, request);
     const entryModel = (prisma as { expenseEntry?: unknown; expenseEntries?: unknown }).expenseEntry
       ?? (prisma as { expenseEntry?: unknown; expenseEntries?: unknown }).expenseEntries;
     const categoryModel = (prisma as { expenseCategory?: unknown; expenseCategories?: unknown }).expenseCategory
       ?? (prisma as { expenseCategory?: unknown; expenseCategories?: unknown }).expenseCategories;
+    const eventModel = (prisma as { expenseEntryEvent?: unknown; expenseEntryEvents?: unknown }).expenseEntryEvent
+      ?? (prisma as { expenseEntryEvent?: unknown; expenseEntryEvents?: unknown }).expenseEntryEvents;
     if (!entryModel || !categoryModel) {
       throw new Error("Expenses are not available. Run prisma db push and prisma generate.");
     }
@@ -83,6 +114,61 @@ export async function PATCH(
       return Response.json({ error: "Category not found or inactive" }, { status: 400 });
     }
 
+    const existing = await (
+      entryModel as {
+        findUnique: (args: {
+          where: { id: number };
+          select: {
+            id: true;
+            date: true;
+            categoryId: true;
+            item: true;
+            amount: true;
+            mode: true;
+            isDeleted: true;
+            category: { select: { id: true; name: true } };
+          };
+        }) => Promise<{
+          id: number;
+          date: string;
+          categoryId: number;
+          item: string;
+          amount: number;
+          mode: ExpenseModeInput;
+          isDeleted?: boolean;
+          category: { id: number; name: string };
+        } | null>;
+      }
+    ).findUnique({
+      where: { id },
+      select: {
+        id: true,
+        date: true,
+        categoryId: true,
+        item: true,
+        amount: true,
+        mode: true,
+        isDeleted: true,
+        category: { select: { id: true, name: true } },
+      },
+    });
+    if (!existing) {
+      return Response.json({ error: "Expense entry not found" }, { status: 404 });
+    }
+    if (existing.isDeleted) {
+      return Response.json({ error: "Deleted expense entry cannot be edited" }, { status: 400 });
+    }
+
+    const beforeSnapshot: ExpenseSnapshot = {
+      date: existing.date,
+      categoryId: existing.categoryId,
+      categoryName: existing.category.name,
+      item: existing.item,
+      amount: Math.round(existing.amount),
+      mode: existing.mode,
+      isDeleted: Boolean(existing.isDeleted),
+    };
+
     const updated = await (
       entryModel as {
         update: (args: {
@@ -100,6 +186,7 @@ export async function PATCH(
             item: true;
             amount: true;
             mode: true;
+            isDeleted: true;
             createdAt: true;
             category: { select: { id: true; name: true } };
             user: { select: { id: true; name: true } };
@@ -111,6 +198,7 @@ export async function PATCH(
           amount: number;
           mode: ExpenseModeInput;
           createdAt: Date;
+          isDeleted?: boolean;
           category: { id: number; name: string };
           user: { id: number; name: string };
         }>;
@@ -130,11 +218,50 @@ export async function PATCH(
         item: true,
         amount: true,
         mode: true,
+        isDeleted: true,
         createdAt: true,
         category: { select: { id: true, name: true } },
         user: { select: { id: true, name: true } },
       },
     });
+
+    const afterSnapshot: ExpenseSnapshot = {
+      date: updated.date,
+      categoryId: updated.category.id,
+      categoryName: updated.category.name,
+      item: updated.item,
+      amount: Math.round(updated.amount),
+      mode: updated.mode,
+      isDeleted: Boolean(updated.isDeleted),
+    };
+    const diffEntries = buildDiffEntries(beforeSnapshot, afterSnapshot);
+    if (eventModel && diffEntries.length > 0) {
+      await (
+        eventModel as {
+          create: (args: {
+            data: {
+              entryId: number;
+              action: string;
+              changedFields: unknown;
+              beforeData: unknown;
+              afterData: unknown;
+              changedBy: number;
+              changedByName: string;
+            };
+          }) => Promise<unknown>;
+        }
+      ).create({
+        data: {
+          entryId: id,
+          action: "edit",
+          changedFields: diffEntries,
+          beforeData: beforeSnapshot,
+          afterData: afterSnapshot,
+          changedBy: actor.id,
+          changedByName: actor.name,
+        },
+      });
+    }
 
     return Response.json({
       data: {
@@ -143,6 +270,7 @@ export async function PATCH(
         item: updated.item,
         amount: Math.round(updated.amount),
         mode: updated.mode,
+        is_deleted: Boolean(updated.isDeleted),
         category_id: updated.category.id,
         category_name: updated.category.name,
         created_by_user_id: updated.user.id,
@@ -163,9 +291,11 @@ export async function DELETE(
   context: { params: Promise<{ id: string }> },
 ) {
   try {
-    await requireOperatorOrAdmin(prisma, request);
+    const actor = await requireOperatorOrAdmin(prisma, request);
     const entryModel = (prisma as { expenseEntry?: unknown; expenseEntries?: unknown }).expenseEntry
       ?? (prisma as { expenseEntry?: unknown; expenseEntries?: unknown }).expenseEntries;
+    const eventModel = (prisma as { expenseEntryEvent?: unknown; expenseEntryEvents?: unknown }).expenseEntryEvent
+      ?? (prisma as { expenseEntryEvent?: unknown; expenseEntryEvents?: unknown }).expenseEntryEvents;
     if (!entryModel) {
       throw new Error("Expenses are not available. Run prisma db push and prisma generate.");
     }
@@ -176,16 +306,110 @@ export async function DELETE(
       return Response.json({ error: "Invalid expense id" }, { status: 400 });
     }
 
+    const existing = await (
+      entryModel as {
+        findUnique: (args: {
+          where: { id: number };
+          select: {
+            id: true;
+            date: true;
+            categoryId: true;
+            item: true;
+            amount: true;
+            mode: true;
+            isDeleted: true;
+            category: { select: { id: true; name: true } };
+          };
+        }) => Promise<{
+          id: number;
+          date: string;
+          categoryId: number;
+          item: string;
+          amount: number;
+          mode: ExpenseModeInput;
+          isDeleted?: boolean;
+          category: { id: number; name: string };
+        } | null>;
+      }
+    ).findUnique({
+      where: { id },
+      select: {
+        id: true,
+        date: true,
+        categoryId: true,
+        item: true,
+        amount: true,
+        mode: true,
+        isDeleted: true,
+        category: { select: { id: true, name: true } },
+      },
+    });
+    if (!existing) {
+      return Response.json({ error: "Expense entry not found" }, { status: 404 });
+    }
+    if (existing.isDeleted) {
+      return Response.json({ ok: true }, { status: 200 });
+    }
+
+    const beforeSnapshot: ExpenseSnapshot = {
+      date: existing.date,
+      categoryId: existing.categoryId,
+      categoryName: existing.category.name,
+      item: existing.item,
+      amount: Math.round(existing.amount),
+      mode: existing.mode,
+      isDeleted: false,
+    };
+
     await (
       entryModel as {
-        delete: (args: { where: { id: number } }) => Promise<unknown>;
+        update: (args: {
+          where: { id: number };
+          data: { isDeleted: true; deletedAt: Date; deletedBy: number };
+        }) => Promise<unknown>;
       }
-    ).delete({ where: { id } });
+    ).update({
+      where: { id },
+      data: {
+        isDeleted: true,
+        deletedAt: new Date(),
+        deletedBy: actor.id,
+      },
+    });
+
+    const afterSnapshot = { ...beforeSnapshot, isDeleted: true };
+    if (eventModel) {
+      await (
+        eventModel as {
+          create: (args: {
+            data: {
+              entryId: number;
+              action: string;
+              changedFields: unknown;
+              beforeData: unknown;
+              afterData: unknown;
+              changedBy: number;
+              changedByName: string;
+            };
+          }) => Promise<unknown>;
+        }
+      ).create({
+        data: {
+          entryId: id,
+          action: "delete",
+          changedFields: buildDiffEntries(beforeSnapshot, afterSnapshot),
+          beforeData: beforeSnapshot,
+          afterData: afterSnapshot,
+          changedBy: actor.id,
+          changedByName: actor.name,
+        },
+      });
+    }
 
     return Response.json({ ok: true }, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    const notFound = message.includes("Record to delete does not exist");
+    const notFound = message.includes("Record to update not found");
     const status = notFound ? 404 : message.startsWith("Unauthorized") ? 401 : message.startsWith("Forbidden") ? 403 : 400;
     return Response.json({ error: notFound ? "Expense entry not found" : message }, { status });
   }
