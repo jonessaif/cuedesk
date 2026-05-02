@@ -60,6 +60,47 @@ function toDateKey(date: Date): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function escapeExcelCell(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildExcelTable(rows: unknown[][]): string {
+  return `<table>${rows.map((row, rowIndex) => {
+    const tag = rowIndex === 0 ? "th" : "td";
+    return `<tr>${row.map((cell) => `<${tag}>${escapeExcelCell(cell)}</${tag}>`).join("")}</tr>`;
+  }).join("")}</table>`;
+}
+
+function downloadExcelWorkbook(filename: string, title: string, sections: Array<{ title: string; rows: unknown[][] }>) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const html = `<!doctype html><html><head><meta charset="utf-8" />
+    <style>
+      body { font-family: Arial, sans-serif; }
+      table { border-collapse: collapse; margin-bottom: 18px; }
+      th, td { border: 1px solid #94a3b8; padding: 6px; }
+      th { background: #e2e8f0; font-weight: 700; }
+      h2 { margin: 18px 0 8px; }
+    </style>
+  </head><body><h1>${escapeExcelCell(title)}</h1>${sections.map((section) => (
+    `<h2>${escapeExcelCell(section.title)}</h2>${buildExcelTable(section.rows)}`
+  )).join("")}</body></html>`;
+  const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 export default function ExpensesPage() {
   const [isDark, setIsDark] = useState(false);
   const [themeReady, setThemeReady] = useState(false);
@@ -113,6 +154,48 @@ export default function ExpensesPage() {
       return "Bank";
     }
     return "UPI Other";
+  }
+
+  function downloadExpensesExcel() {
+    const periodLabel = fromDate === toDate ? fromDate : `${fromDate}_to_${toDate}`;
+    downloadExcelWorkbook(
+      `expenses-${periodLabel}.xls`,
+      `Expenses ${periodLabel}`,
+      [
+        {
+          title: "Summary",
+          rows: [
+            ["Metric", "Value"],
+            ["Cash", cashTotal],
+            ["Bank", bankTotal],
+            ["UPI Other", upiOtherTotal],
+            ["Total Expense", totalExpense],
+          ],
+        },
+        {
+          title: "Category Totals",
+          rows: [
+            ["Category", "Total"],
+            ...categoryTotals.map((row) => [row.category_name, row.total]),
+          ],
+        },
+        {
+          title: "Expense Entries",
+          rows: [
+            ["Date", "Category", "Item", "Mode", "Amount", "Added By", "Time"],
+            ...entries.map((entry) => [
+              entry.date,
+              entry.category_name,
+              entry.item,
+              formatExpenseMode(entry.mode),
+              entry.amount,
+              entry.created_by_user_name,
+              formatDateTime(entry.created_at),
+            ]),
+          ],
+        },
+      ],
+    );
   }
 
   function authHeaders(): HeadersInit {
@@ -731,6 +814,14 @@ export default function ExpensesPage() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-slate-900">Expense Summary</h3>
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={downloadExpensesExcel}
+                disabled={loading}
+                className="rounded-md bg-cyan-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-800 disabled:opacity-50"
+              >
+                Download Excel
+              </button>
               <button
                 type="button"
                 onClick={toggleCategoryManagerMode}

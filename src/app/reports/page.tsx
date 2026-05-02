@@ -321,6 +321,47 @@ function formatDateTimeFull(value: string | null | undefined): string {
   return date.toLocaleString();
 }
 
+function escapeExcelCell(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildExcelTable(rows: unknown[][]): string {
+  return `<table>${rows.map((row, rowIndex) => {
+    const tag = rowIndex === 0 ? "th" : "td";
+    return `<tr>${row.map((cell) => `<${tag}>${escapeExcelCell(cell)}</${tag}>`).join("")}</tr>`;
+  }).join("")}</table>`;
+}
+
+function downloadExcelWorkbook(filename: string, title: string, sections: Array<{ title: string; rows: unknown[][] }>) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const html = `<!doctype html><html><head><meta charset="utf-8" />
+    <style>
+      body { font-family: Arial, sans-serif; }
+      table { border-collapse: collapse; margin-bottom: 18px; }
+      th, td { border: 1px solid #94a3b8; padding: 6px; }
+      th { background: #e2e8f0; font-weight: 700; }
+      h2 { margin: 18px 0 8px; }
+    </style>
+  </head><body><h1>${escapeExcelCell(title)}</h1>${sections.map((section) => (
+    `<h2>${escapeExcelCell(section.title)}</h2>${buildExcelTable(section.rows)}`
+  )).join("")}</body></html>`;
+  const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 function formatRate(value: number | null | undefined, tableName?: string): string {
   const safe = typeof value === "number" ? value : 0;
   if ((tableName ?? "").toUpperCase().startsWith("PS")) {
@@ -859,6 +900,81 @@ export default function ReportsPage() {
   const dueRaisedLabel = ledgerScope === "range" ? "Due Raised (Selected Range)" : "Due Raised Today";
   const dueOutstandingLabel = ledgerScope === "range" ? "Due Outstanding (end of selected range)" : "Due Outstanding (end of day)";
   const receivableDeltaTone = summary.netReceivableChange > 0 ? "text-red-700" : summary.netReceivableChange < 0 ? "text-emerald-700" : "text-slate-800";
+
+  function downloadLedgerExcel() {
+    const periodLabel = ledgerScope === "range"
+      ? `${ledgerStartDate}_to_${ledgerEndDate}`
+      : (windowInfo.key ?? ledgerDate ?? "current");
+    downloadExcelWorkbook(
+      `sales-ledger-${periodLabel}.xls`,
+      `Sales Ledger ${periodLabel}`,
+      [
+        {
+          title: "Summary",
+          rows: [
+            ["Metric", "Value"],
+            ["Session Subtotal", summary.subtotal],
+            ["Discount", summary.discount],
+            ["Net Session Revenue", summary.net],
+            ["Cash In", summary.cash],
+            ["UPI In", summary.upi],
+            ["Card In", summary.card],
+            ["Total Cash Collected", summary.collectionTotal],
+            ["Old Due Recovery", summary.dueReceived],
+            ["Due Raised", summary.due],
+            ["Opening Due", summary.openingDueOutstanding],
+            ["Due Outstanding", summary.dueOutstanding],
+            ["Net Receivable Change", summary.netReceivableChange],
+            ["Unpaid", summary.unpaid],
+            ["LTP Sessions", summary.ltpCount],
+            ["LTP Value", summary.ltpValue],
+            ["Cancelled Sessions", summary.cancelledCount],
+          ],
+        },
+        {
+          title: "Sessions",
+          rows: [
+            [
+              "Bill",
+              "Table",
+              "Player",
+              "Business Date",
+              "Start",
+              "End",
+              "Duration Minutes",
+              "Rate",
+              "Subtotal",
+              "Discount",
+              "Final Amount",
+              "Paid",
+              "Status",
+              "Mode",
+              "Split",
+            ],
+            ...sortedRows.map((row) => [
+              row.billId ? `Bill #${row.billId}` : "-",
+              row.tableName,
+              row.playerName,
+              row.businessDayKey ?? "-",
+              formatDateTimeFull(row.startTime),
+              formatDateTimeFull(row.endTime),
+              row.durationMinutes,
+              formatRate(row.ratePerMin, row.tableName),
+              row.amount,
+              row.sessionDiscount,
+              row.finalAmount,
+              row.effectivePaid,
+              ledgerStatusText(row.state),
+              row.paymentModes.length > 0 ? row.paymentModes.join(", ") : "-",
+              row.paymentSplit.length > 0
+                ? row.paymentSplit.map((entry) => `${entry.mode}: ${entry.amount}`).join(", ")
+                : "-",
+            ]),
+          ],
+        },
+      ],
+    );
+  }
 
   const analyticsTopTable = analytics?.tables?.[0] ?? null;
   const analyticsWindow = analytics?.window ?? {
@@ -1504,13 +1620,25 @@ export default function ReportsPage() {
             </div>
           ) : null}
 
-          <p className="report-window-pill mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
-            {ledgerScope === "current"
-              ? `Business day: ${formatDateTimeFull(windowInfo.start)} to ${formatDateTimeFull(windowInfo.end)}`
-              : ledgerScope === "day"
-                ? `Business day ${windowInfo.key ?? ledgerDate}: ${formatDateTimeFull(windowInfo.start)} to ${formatDateTimeFull(windowInfo.end)}`
-                : `Filtered range: ${ledgerStartDate} to ${ledgerEndDate}`}
-          </p>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="report-window-pill rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
+              {ledgerScope === "current"
+                ? `Business day: ${formatDateTimeFull(windowInfo.start)} to ${formatDateTimeFull(windowInfo.end)}`
+                : ledgerScope === "day"
+                  ? `Business day ${windowInfo.key ?? ledgerDate}: ${formatDateTimeFull(windowInfo.start)} to ${formatDateTimeFull(windowInfo.end)}`
+                  : `Filtered range: ${ledgerStartDate} to ${ledgerEndDate}`}
+            </p>
+            {activeTab === "ledger" ? (
+              <button
+                type="button"
+                onClick={downloadLedgerExcel}
+                disabled={ledgerLoading}
+                className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
+              >
+                Download Excel
+              </button>
+            ) : null}
+          </div>
 
           {activeTab === "ledger" ? (
             <>
