@@ -94,6 +94,13 @@ export default function ExpensesPage() {
   const [entryAmount, setEntryAmount] = useState("");
   const [entryMode, setEntryMode] = useState<ExpenseMode>("cash");
   const [entryBusy, setEntryBusy] = useState(false);
+  const [editingEntryId, setEditingEntryId] = useState<number | null>(null);
+  const [editEntryDate, setEditEntryDate] = useState("");
+  const [editEntryCategoryId, setEditEntryCategoryId] = useState("");
+  const [editEntryItem, setEditEntryItem] = useState("");
+  const [editEntryAmount, setEditEntryAmount] = useState("");
+  const [editEntryMode, setEditEntryMode] = useState<ExpenseMode>("cash");
+  const [entryActionBusyId, setEntryActionBusyId] = useState<number | null>(null);
 
   const showNativeServerButton = themeReady && isNativeServerSetupAvailable();
   const totalExpense = cashTotal + bankTotal + upiOtherTotal;
@@ -320,6 +327,86 @@ export default function ExpensesPage() {
     }
   }
 
+  function beginEditExpense(entry: ExpenseEntry) {
+    setEditingEntryId(entry.id);
+    setEditEntryDate(entry.date);
+    setEditEntryCategoryId(String(entry.category_id));
+    setEditEntryItem(entry.item);
+    setEditEntryAmount(String(entry.amount));
+    setEditEntryMode(entry.mode);
+  }
+
+  function cancelEditExpense() {
+    setEditingEntryId(null);
+    setEditEntryDate("");
+    setEditEntryCategoryId("");
+    setEditEntryItem("");
+    setEditEntryAmount("");
+    setEditEntryMode("cash");
+  }
+
+  async function updateExpenseRow(entryId: number) {
+    if (!activeUserId || entryActionBusyId !== null) {
+      return;
+    }
+    setEntryActionBusyId(entryId);
+    setError("");
+    try {
+      const amount = Number(editEntryAmount);
+      const categoryId = Number(editEntryCategoryId);
+      const res = await fetch(`/api/expenses/entries/${entryId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          date: editEntryDate,
+          category_id: categoryId,
+          item: editEntryItem.trim(),
+          amount: Number.isFinite(amount) ? amount : 0,
+          mode: editEntryMode,
+        }),
+      });
+      const data = await readJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to update expense");
+      }
+      cancelEditExpense();
+      await loadExpenses();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update expense");
+    } finally {
+      setEntryActionBusyId(null);
+    }
+  }
+
+  async function deleteExpenseRow(entry: ExpenseEntry) {
+    if (!activeUserId || entryActionBusyId !== null) {
+      return;
+    }
+    if (!window.confirm(`Delete expense "${entry.item}" for ₹${entry.amount}?`)) {
+      return;
+    }
+    setEntryActionBusyId(entry.id);
+    setError("");
+    try {
+      const res = await fetch(`/api/expenses/entries/${entry.id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      const data = await readJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to delete expense");
+      }
+      if (editingEntryId === entry.id) {
+        cancelEditExpense();
+      }
+      await loadExpenses();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete expense");
+    } finally {
+      setEntryActionBusyId(null);
+    }
+  }
+
   function toggleFilterCategory(id: number) {
     setSelectedCategoryIds((prev) => (prev.includes(id) ? prev.filter((entryId) => entryId !== id) : [...prev, id]));
   }
@@ -476,6 +563,130 @@ export default function ExpensesPage() {
     () => entries.filter((entry) => entry.date === entryDateInput),
     [entries, entryDateInput],
   );
+
+  function renderExpenseEntryRow(entry: ExpenseEntry, showDate: boolean) {
+    const isEditing = editingEntryId === entry.id;
+    const busy = entryActionBusyId === entry.id;
+    const categoryOptions = categories.filter(
+      (category) => category.isActive || category.id === entry.category_id,
+    );
+
+    if (isEditing) {
+      return (
+        <tr key={entry.id} className="border-t border-emerald-200 bg-emerald-50">
+          {showDate ? (
+            <td className="px-2 py-2">
+              <input
+                type="date"
+                value={editEntryDate}
+                onChange={(e) => setEditEntryDate(e.target.value)}
+                disabled={busy}
+                className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+              />
+            </td>
+          ) : null}
+          <td className="px-2 py-2">
+            <select
+              value={editEntryCategoryId}
+              onChange={(e) => setEditEntryCategoryId(e.target.value)}
+              disabled={busy}
+              className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+            >
+              <option value="">Select</option>
+              {categoryOptions.map((category) => (
+                <option key={category.id} value={String(category.id)}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+          </td>
+          <td className="px-2 py-2">
+            <input
+              value={editEntryItem}
+              onChange={(e) => setEditEntryItem(e.target.value)}
+              disabled={busy}
+              className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+            />
+          </td>
+          <td className="px-2 py-2">
+            <select
+              value={editEntryMode}
+              onChange={(e) => setEditEntryMode(e.target.value as ExpenseMode)}
+              disabled={busy}
+              className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+            >
+              <option value="cash">Cash</option>
+              <option value="bank">Bank</option>
+              <option value="upi_other">UPI Other</option>
+            </select>
+          </td>
+          <td className="px-2 py-2 text-right">
+            <input
+              type="number"
+              value={editEntryAmount}
+              onChange={(e) => setEditEntryAmount(e.target.value)}
+              disabled={busy}
+              className="w-24 rounded border border-slate-300 bg-white px-2 py-1 text-right"
+            />
+          </td>
+          <td className="px-2 py-2">{entry.created_by_user_name}</td>
+          <td className="px-2 py-2">{formatDateTime(entry.created_at)}</td>
+          <td className="px-2 py-2">
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => void updateExpenseRow(entry.id)}
+                disabled={busy}
+                className="rounded bg-emerald-700 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+              >
+                {busy ? "Saving..." : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={cancelEditExpense}
+                disabled={busy}
+                className="rounded bg-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-800 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </td>
+        </tr>
+      );
+    }
+
+    return (
+      <tr key={entry.id} className="border-t border-slate-200">
+        {showDate ? <td className="px-2 py-2">{entry.date}</td> : null}
+        <td className="px-2 py-2">{entry.category_name}</td>
+        <td className="px-2 py-2">{entry.item}</td>
+        <td className="px-2 py-2">{formatExpenseMode(entry.mode)}</td>
+        <td className="px-2 py-2 text-right font-semibold">₹{entry.amount}</td>
+        <td className="px-2 py-2">{entry.created_by_user_name}</td>
+        <td className="px-2 py-2">{formatDateTime(entry.created_at)}</td>
+        <td className="px-2 py-2">
+          <div className="flex gap-1">
+            <button
+              type="button"
+              onClick={() => beginEditExpense(entry)}
+              disabled={entryActionBusyId !== null}
+              className="rounded bg-indigo-600 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              onClick={() => void deleteExpenseRow(entry)}
+              disabled={entryActionBusyId !== null}
+              className="rounded bg-rose-700 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+            >
+              {busy ? "Deleting..." : "Delete"}
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
 
   if (!activeUserId) {
     return (
@@ -730,23 +941,15 @@ export default function ExpensesPage() {
                       <th className="px-2 py-2 text-right font-semibold">Amount</th>
                       <th className="px-2 py-2 text-left font-semibold">Added By</th>
                       <th className="px-2 py-2 text-left font-semibold">Time</th>
+                      <th className="px-2 py-2 text-left font-semibold">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {loading ? (
-                      <tr><td colSpan={6} className="px-2 py-3 text-center text-slate-500">Loading...</td></tr>
+                      <tr><td colSpan={7} className="px-2 py-3 text-center text-slate-500">Loading...</td></tr>
                     ) : addModeEntries.length === 0 ? (
-                      <tr><td colSpan={6} className="px-2 py-3 text-center text-slate-500">No entries for this day.</td></tr>
-                    ) : addModeEntries.map((entry) => (
-                      <tr key={entry.id} className="border-t border-slate-200">
-                        <td className="px-2 py-2">{entry.category_name}</td>
-                        <td className="px-2 py-2">{entry.item}</td>
-                        <td className="px-2 py-2">{formatExpenseMode(entry.mode)}</td>
-                        <td className="px-2 py-2 text-right font-semibold">₹{entry.amount}</td>
-                        <td className="px-2 py-2">{entry.created_by_user_name}</td>
-                        <td className="px-2 py-2">{formatDateTime(entry.created_at)}</td>
-                      </tr>
-                    ))}
+                      <tr><td colSpan={7} className="px-2 py-3 text-center text-slate-500">No entries for this day.</td></tr>
+                    ) : addModeEntries.map((entry) => renderExpenseEntryRow(entry, false))}
                   </tbody>
                 </table>
               </div>
@@ -885,24 +1088,15 @@ export default function ExpensesPage() {
                         <th className="px-2 py-2 text-right font-semibold">Amount</th>
                         <th className="px-2 py-2 text-left font-semibold">Added By</th>
                         <th className="px-2 py-2 text-left font-semibold">Time</th>
+                        <th className="px-2 py-2 text-left font-semibold">Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {loading ? (
-                        <tr><td colSpan={7} className="px-2 py-3 text-center text-slate-500">Loading...</td></tr>
+                        <tr><td colSpan={8} className="px-2 py-3 text-center text-slate-500">Loading...</td></tr>
                       ) : entries.length === 0 ? (
-                        <tr><td colSpan={7} className="px-2 py-3 text-center text-slate-500">No entries for selected filters.</td></tr>
-                      ) : entries.map((entry) => (
-                        <tr key={entry.id} className="border-t border-slate-200">
-                          <td className="px-2 py-2">{entry.date}</td>
-                          <td className="px-2 py-2">{entry.category_name}</td>
-                          <td className="px-2 py-2">{entry.item}</td>
-                          <td className="px-2 py-2">{formatExpenseMode(entry.mode)}</td>
-                          <td className="px-2 py-2 text-right font-semibold">₹{entry.amount}</td>
-                          <td className="px-2 py-2">{entry.created_by_user_name}</td>
-                          <td className="px-2 py-2">{formatDateTime(entry.created_at)}</td>
-                        </tr>
-                      ))}
+                        <tr><td colSpan={8} className="px-2 py-3 text-center text-slate-500">No entries for selected filters.</td></tr>
+                      ) : entries.map((entry) => renderExpenseEntryRow(entry, true))}
                     </tbody>
                   </table>
                 </div>
