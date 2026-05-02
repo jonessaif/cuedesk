@@ -1,7 +1,7 @@
 import { requireOperatorOrAdmin } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 
-type ExpenseModeInput = "cash" | "bank";
+type ExpenseModeInput = "cash" | "bank" | "upi_other";
 
 function isDateKey(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -90,6 +90,7 @@ export async function GET(request: Request) {
 
     const cash = Math.round(rows.filter((row) => row.mode === "cash").reduce((sum, row) => sum + row.amount, 0));
     const bank = Math.round(rows.filter((row) => row.mode === "bank").reduce((sum, row) => sum + row.amount, 0));
+    const upi_other = Math.round(rows.filter((row) => row.mode === "upi_other").reduce((sum, row) => sum + row.amount, 0));
     const normalizedRows = rows.map((row) => ({
         id: row.id,
         date: row.date,
@@ -121,7 +122,7 @@ export async function GET(request: Request) {
 
     return Response.json({
       data: normalizedRows,
-      summary: { cash, bank, total: cash + bank },
+      summary: { cash, bank, upi_other, total: cash + bank + upi_other },
       by_category,
     }, { status: 200 });
   } catch (error) {
@@ -167,8 +168,8 @@ export async function POST(request: Request) {
     if (!Number.isFinite(amount) || amount <= 0) {
       return Response.json({ error: "Amount must be greater than 0" }, { status: 400 });
     }
-    if (mode !== "cash" && mode !== "bank") {
-      return Response.json({ error: "Mode must be cash or bank" }, { status: 400 });
+    if (mode !== "cash" && mode !== "bank" && mode !== "upi_other") {
+      return Response.json({ error: "Mode must be cash, bank, or upi other" }, { status: 400 });
     }
 
     const category = await (

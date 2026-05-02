@@ -22,12 +22,14 @@ type ExpenseEntry = {
   date: string;
   item: string;
   amount: number;
-  mode: "cash" | "bank";
+  mode: ExpenseMode;
   category_id: number;
   category_name: string;
   created_by_user_name: string;
   created_at: string;
 };
+
+type ExpenseMode = "cash" | "bank" | "upi_other";
 
 type CategoryTotal = {
   category_id: number;
@@ -75,6 +77,7 @@ export default function ExpensesPage() {
   const [categoryTotals, setCategoryTotals] = useState<CategoryTotal[]>([]);
   const [cashTotal, setCashTotal] = useState(0);
   const [bankTotal, setBankTotal] = useState(0);
+  const [upiOtherTotal, setUpiOtherTotal] = useState(0);
 
   const [showCategoryManager, setShowCategoryManager] = useState(false);
   const [showAddExpense, setShowAddExpense] = useState(false);
@@ -89,11 +92,21 @@ export default function ExpensesPage() {
   const [entryCategoryId, setEntryCategoryId] = useState("");
   const [entryItem, setEntryItem] = useState("");
   const [entryAmount, setEntryAmount] = useState("");
-  const [entryMode, setEntryMode] = useState<"cash" | "bank">("cash");
+  const [entryMode, setEntryMode] = useState<ExpenseMode>("cash");
   const [entryBusy, setEntryBusy] = useState(false);
 
   const showNativeServerButton = themeReady && isNativeServerSetupAvailable();
-  const totalExpense = cashTotal + bankTotal;
+  const totalExpense = cashTotal + bankTotal + upiOtherTotal;
+
+  function formatExpenseMode(mode: ExpenseMode): string {
+    if (mode === "cash") {
+      return "Cash";
+    }
+    if (mode === "bank") {
+      return "Bank";
+    }
+    return "UPI Other";
+  }
 
   function authHeaders(): HeadersInit {
     if (!activeUserId) {
@@ -146,7 +159,7 @@ export default function ExpensesPage() {
       });
       const entriesData = await readJsonSafe<{
         data?: ExpenseEntry[];
-        summary?: { cash: number; bank: number; total: number };
+        summary?: { cash: number; bank: number; upi_other?: number; total: number };
         by_category?: CategoryTotal[];
         error?: string;
       }>(entriesRes);
@@ -156,6 +169,7 @@ export default function ExpensesPage() {
       setEntries(entriesData?.data ?? []);
       setCashTotal(entriesData?.summary?.cash ?? 0);
       setBankTotal(entriesData?.summary?.bank ?? 0);
+      setUpiOtherTotal(entriesData?.summary?.upi_other ?? 0);
       setCategoryTotals(entriesData?.by_category ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load expenses");
@@ -680,11 +694,12 @@ export default function ExpensesPage() {
                       <td className="px-2 py-1">
                         <select
                           value={entryMode}
-                          onChange={(e) => setEntryMode(e.target.value as "cash" | "bank")}
+                          onChange={(e) => setEntryMode(e.target.value as ExpenseMode)}
                           className="w-full rounded border border-slate-300 px-2 py-1"
                         >
                           <option value="cash">Cash</option>
                           <option value="bank">Bank</option>
+                          <option value="upi_other">UPI Other</option>
                         </select>
                       </td>
                       <td className="px-2 py-1">
@@ -726,7 +741,7 @@ export default function ExpensesPage() {
                       <tr key={entry.id} className="border-t border-slate-200">
                         <td className="px-2 py-2">{entry.category_name}</td>
                         <td className="px-2 py-2">{entry.item}</td>
-                        <td className="px-2 py-2">{entry.mode === "cash" ? "Cash" : "Bank"}</td>
+                        <td className="px-2 py-2">{formatExpenseMode(entry.mode)}</td>
                         <td className="px-2 py-2 text-right font-semibold">₹{entry.amount}</td>
                         <td className="px-2 py-2">{entry.created_by_user_name}</td>
                         <td className="px-2 py-2">{formatDateTime(entry.created_at)}</td>
@@ -760,6 +775,7 @@ export default function ExpensesPage() {
                 <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-xs">
                   <p className="flex items-center justify-between"><span>Cash</span><span className="font-semibold">₹{cashTotal}</span></p>
                   <p className="flex items-center justify-between"><span>Bank</span><span className="font-semibold">₹{bankTotal}</span></p>
+                  <p className="flex items-center justify-between"><span>UPI Other</span><span className="font-semibold">₹{upiOtherTotal}</span></p>
                   <p className="mt-1 flex items-center justify-between border-t border-slate-200 pt-1 font-bold text-slate-900"><span>Total Expense</span><span>₹{totalExpense}</span></p>
                 </div>
               </div>
@@ -881,7 +897,7 @@ export default function ExpensesPage() {
                           <td className="px-2 py-2">{entry.date}</td>
                           <td className="px-2 py-2">{entry.category_name}</td>
                           <td className="px-2 py-2">{entry.item}</td>
-                          <td className="px-2 py-2">{entry.mode === "cash" ? "Cash" : "Bank"}</td>
+                          <td className="px-2 py-2">{formatExpenseMode(entry.mode)}</td>
                           <td className="px-2 py-2 text-right font-semibold">₹{entry.amount}</td>
                           <td className="px-2 py-2">{entry.created_by_user_name}</td>
                           <td className="px-2 py-2">{formatDateTime(entry.created_at)}</td>

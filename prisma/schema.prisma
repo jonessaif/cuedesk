@@ -299,4 +299,5 @@ enum ChartMode {
 enum ExpenseMode {
   cash
   bank
+  upi_other
 }

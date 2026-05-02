@@ -201,7 +201,7 @@ async function computeDailyClosingSnapshot(args: {
         findMany: (args: {
           where: { date: string };
           select: { amount: true; mode: true };
-        }) => Promise<Array<{ amount: number; mode: "cash" | "bank" }>>;
+        }) => Promise<Array<{ amount: number; mode: "cash" | "bank" | "upi_other" }>>;
       }
     ).findMany({
       where: { date: args.dateKey },
