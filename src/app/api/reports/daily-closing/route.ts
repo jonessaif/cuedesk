@@ -165,7 +165,7 @@ async function computeDailyClosingSnapshot(args: {
     }),
   ]);
 
-  const canEditOpening = !previous;
+  const canEditOpening = isToday;
 
   const openingCash = roundMoney(
     args.manual?.openingCash ??

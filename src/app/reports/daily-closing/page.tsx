@@ -437,6 +437,9 @@ export default function DailyClosingPage() {
                       />
                     </label>
                   </div>
+                  {dailyClosing.can_edit_opening && dailyClosing.can_edit ? (
+                    <p className="mt-1 text-[10px] text-emerald-700">Editable until this business day closes</p>
+                  ) : null}
                   {!dailyClosing.can_edit_opening ? (
                     <p className="mt-1 text-[10px] text-slate-500">Auto-filled from yesterday closing</p>
                   ) : null}
