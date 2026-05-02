@@ -506,6 +506,10 @@ function toLifecycleState(state: LedgerSessionRow["state"]): LifecycleState {
   return "Billed";
 }
 
+function isZeroPaidLedgerSession(row: LedgerSessionRow): boolean {
+  return row.state === "Paid" && row.finalAmount <= 0 && row.effectivePaid <= 0;
+}
+
 function formatRate(value: number | null | undefined, tableName?: string): string {
   const safe = typeof value === "number" ? value : 0;
   if ((tableName ?? "").toUpperCase().startsWith("PS")) {
@@ -3046,7 +3050,7 @@ export default function HomePage() {
     } else if (currentLifecycle === "Billed") {
       payload.overrideStatus = "completed";
     } else if (currentLifecycle === "Paid") {
-      payload.overrideStatus = "billed";
+      payload.overrideStatus = isZeroPaidLedgerSession(editingSession) ? "completed" : "billed";
     }
 
     setOverrideBusy(true);
@@ -4422,8 +4426,9 @@ export default function HomePage() {
 
               {currentLifecycle === "Paid" ? (
                 <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
-                  This paid session can only be moved back to billed. Payments will be cleared
-                  from active bill data and preserved in override history.
+                  {isZeroPaidLedgerSession(editingSession)
+                    ? "This zero amount paid session will be moved back to unbilled."
+                    : "This paid session can only be moved back to billed. Payments will be cleared from active bill data and preserved in override history."}
                 </div>
               ) : null}
             </div>

@@ -825,6 +825,82 @@ describe("Sessions module", () => {
     expect(deleteBill).toHaveBeenCalledWith({ where: { id: 77 } });
   });
 
+  it("should move zero amount billed session back to unbilled", async () => {
+    const update = vi.fn().mockResolvedValue({ id: 32, billId: null, status: "completed" });
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
+    const deleteBill = vi.fn().mockResolvedValue({ id: 78 });
+
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 32,
+          tableId: 1,
+          status: "billed",
+          startTime: new Date("2026-04-12T10:00:00.000Z"),
+          endTime: new Date("2026-04-12T11:00:00.000Z"),
+          payerMode: "single",
+          payerData: { name: "A" },
+          billId: 78,
+          amount: 0,
+          complimentaryMinutes: 60,
+          complimentaryReason: "Combo",
+        }),
+        findMany: vi.fn().mockResolvedValue([{ amount: 0 }]),
+        update,
+        updateMany,
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 1,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+      bills: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 78,
+          totalAmount: 0,
+          discountedAmount: 0,
+          discountType: null,
+        }),
+        create: vi.fn(),
+        delete: deleteBill,
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany,
+      },
+    };
+
+    await sessionService.overrideSession(prisma as never, {
+      sessionId: 32,
+      overrideStatus: "completed",
+    });
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 32 },
+        data: expect.objectContaining({
+          status: "completed",
+          overrideStatus: "completed",
+          billId: null,
+          amount: 0,
+        }),
+      }),
+    );
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { billId: 78 },
+      data: {
+        billId: null,
+        status: "completed",
+        overrideStatus: null,
+      },
+    });
+    expect(deleteMany).toHaveBeenCalledWith({ where: { billId: 78 } });
+    expect(deleteBill).toHaveBeenCalledWith({ where: { id: 78 } });
+  });
+
   it("should create override history event when override updates session", async () => {
     const findUniqueSession = vi.fn().mockResolvedValue({
       id: 41,
