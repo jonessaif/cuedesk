@@ -1275,4 +1275,64 @@ describe("Sessions module", () => {
     });
     expect(result.summary.unpaid).toBe(0);
   });
+
+  it("should surface future-dated current ledger rows for correction without counting totals", async () => {
+    const paymentsFindMany = vi.fn().mockResolvedValue([]);
+    const futureStart = new Date(2026, 3, 13, 19, 0, 0, 0);
+    const futureEnd = new Date(2026, 3, 13, 20, 0, 0, 0);
+
+    const prisma = {
+      sessions: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: 701,
+            tableId: 1,
+            playerName: "Wrong Date",
+            startTime: futureStart,
+            endTime: futureEnd,
+            businessDayKey: "2026-04-13",
+            status: "completed",
+            outcome: "NORMAL",
+            billId: null,
+            amount: 300,
+            cancellationReason: null,
+            canceledAt: null,
+            payerMode: "single",
+            payerData: { name: "Wrong Date" },
+            overrideStartTime: futureStart,
+            overrideEndTime: futureEnd,
+            overrideRatePerMin: null,
+            overridePayerMode: null,
+            overridePayerData: null,
+            overrideStatus: null,
+            overridePaymentModes: null,
+            table: { name: "S1", ratePerMin: 5 },
+          },
+        ]),
+      },
+      bills: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      payments: {
+        findMany: paymentsFindMany,
+      },
+      dailyReports: {
+        upsert: vi.fn(),
+      },
+    };
+
+    const result = await sessionService.getAllSessions(prisma as never, {
+      scope: "current",
+      now: new Date(2026, 3, 12, 12, 0, 0, 0),
+    });
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      id: 701,
+      isFutureDatedCorrection: true,
+      state: "Completed",
+    });
+    expect(result.summary.subtotal).toBe(0);
+    expect(result.summary.unpaid).toBe(0);
+  });
 });

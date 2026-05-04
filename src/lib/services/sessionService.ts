@@ -2129,19 +2129,36 @@ export const sessionService = {
       : null;
 
     const nowMs = now.getTime();
+    const futureCorrectionLookaheadMs = 36 * 60 * 60 * 1000;
     const scopedRows = sortedRows.filter((row) => {
       const rowKey = row.businessDayKey ?? toBusinessDayKeyFromDate(new Date(row.startTime));
+      const effectiveStart = new Date(row.startTime).getTime();
       if (scope === "day") {
         return rowKey === selectedDayKey;
       }
       if (scope === "range" && selectedRange) {
         return rowKey >= selectedRange.startDate && rowKey <= selectedRange.endDate;
       }
-      if (rowKey !== currentBusinessDayKey) {
-        return false;
+      if (rowKey === currentBusinessDayKey) {
+        return effectiveStart <= nowMs;
       }
+      return (
+        rowKey > currentBusinessDayKey &&
+        effectiveStart > nowMs &&
+        effectiveStart <= nowMs + futureCorrectionLookaheadMs &&
+        row.state !== "Paid" &&
+        row.state !== "Cancelled"
+      );
+    }).map((row) => {
+      const rowKey = row.businessDayKey ?? toBusinessDayKeyFromDate(new Date(row.startTime));
       const effectiveStart = new Date(row.startTime).getTime();
-      return effectiveStart <= nowMs;
+      return {
+        ...row,
+        isFutureDatedCorrection:
+          scope === "current" &&
+          rowKey > currentBusinessDayKey &&
+          effectiveStart > nowMs,
+      };
     });
     const currentWindow = toBusinessDayWindowFromKey(currentBusinessDayKey);
     const selectedWindow = toBusinessDayWindowFromKey(selectedDayKey);
@@ -2277,9 +2294,10 @@ export const sessionService = {
       }
     }
 
-    const activeRows = scopedRows.filter((row) => row.state !== "Cancelled" && row.state !== "LTP-Loss");
-    const ltpRows = scopedRows.filter((row) => row.outcome === "LTP_LOSS");
-    const cancelledRows = scopedRows.filter((row) => row.outcome === "CANCELLED");
+    const summaryRows = scopedRows.filter((row) => !row.isFutureDatedCorrection);
+    const activeRows = summaryRows.filter((row) => row.state !== "Cancelled" && row.state !== "LTP-Loss");
+    const ltpRows = summaryRows.filter((row) => row.outcome === "LTP_LOSS");
+    const cancelledRows = summaryRows.filter((row) => row.outcome === "CANCELLED");
     const subtotal = roundMoney(activeRows.reduce((sum, row) => sum + row.amount, 0));
     const discount = roundMoney(activeRows.reduce((sum, row) => sum + row.sessionDiscount, 0));
     const net = roundMoney(subtotal - discount);

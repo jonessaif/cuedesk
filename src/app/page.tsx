@@ -84,6 +84,7 @@ type LedgerSessionRow = {
   overridePayerData: unknown;
   overrideStatus: "running" | "completed" | "billed" | null;
   overridePaymentModes: PaymentMode[] | null;
+  isFutureDatedCorrection?: boolean;
 };
 
 type PaymentMode = "cash" | "upi" | "card" | "due";
@@ -3894,10 +3895,14 @@ export default function HomePage() {
                       ? "border-t-4 border-slate-300"
                       : "";
 
+                    const rowTone = row.isFutureDatedCorrection
+                      ? "bg-rose-50 border-l-4 border-rose-500"
+                      : ledgerRowColor(row.state);
+
                     return (
                     <tr
                       key={row.id}
-                      className={`${ledgerRowColor(row.state)} ${groupDivider} ${
+                      className={`${rowTone} ${groupDivider} ${
                         overridden ? "ring-1 ring-inset ring-indigo-200" : ""
                       }`}
                     >
@@ -3909,7 +3914,14 @@ export default function HomePage() {
                       </td>
                       <td className="px-2 py-2">{row.tableName}</td>
                       <td className="px-2 py-2">{row.playerName}</td>
-                      <td className="px-2 py-2">{row.businessDayKey ?? "-"}</td>
+                      <td className="px-2 py-2">
+                        {row.businessDayKey ?? "-"}
+                        {row.isFutureDatedCorrection ? (
+                          <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+                            Check date
+                          </span>
+                        ) : null}
+                      </td>
                       <td className="px-2 py-2">{formatTime12h(row.startTime)}</td>
                       <td className="px-2 py-2">{formatTime12h(row.endTime)}</td>
                       <td className="px-2 py-2">{row.durationMinutes} min</td>

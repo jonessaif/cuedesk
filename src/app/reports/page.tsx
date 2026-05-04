@@ -100,6 +100,7 @@ type LedgerSessionRow = {
   overridePayerData: unknown;
   overrideStatus: "running" | "completed" | "billed" | null;
   overridePaymentModes: PaymentMode[] | null;
+  isFutureDatedCorrection?: boolean;
 };
 
 type TableAnalyticsRow = {
@@ -1743,15 +1744,27 @@ export default function ReportsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedRows.map((row) => (
+                    {sortedRows.map((row) => {
+                      const rowTone = row.isFutureDatedCorrection
+                        ? "bg-rose-50 border-l-4 border-rose-500"
+                        : ledgerRowColor(row.state);
+
+                      return (
                       <tr
                         key={row.id}
-                        className={`${ledgerRowColor(row.state)} ${hasSessionOverrides(row) ? "ring-1 ring-inset ring-indigo-200" : ""}`}
+                        className={`${rowTone} ${hasSessionOverrides(row) ? "ring-1 ring-inset ring-indigo-200" : ""}`}
                       >
                         <td className="px-2 py-2">{row.billId ? `Bill #${row.billId}` : "-"}</td>
                         <td className="px-2 py-2">{row.tableName}</td>
                         <td className="px-2 py-2">{row.playerName}</td>
-                        <td className="px-2 py-2">{row.businessDayKey ?? "-"}</td>
+                        <td className="px-2 py-2">
+                          {row.businessDayKey ?? "-"}
+                          {row.isFutureDatedCorrection ? (
+                            <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+                              Check date
+                            </span>
+                          ) : null}
+                        </td>
                         <td className="px-2 py-2">{formatTime12h(row.startTime)}</td>
                         <td className="px-2 py-2">{formatTime12h(row.endTime)}</td>
                         <td className="px-2 py-2">{row.durationMinutes} min</td>
@@ -1786,7 +1799,8 @@ export default function ReportsPage() {
                           ) : null}
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                     {sortedRows.length === 0 ? (
                       <tr>
                         <td className="px-2 py-3 text-slate-500" colSpan={12}>
