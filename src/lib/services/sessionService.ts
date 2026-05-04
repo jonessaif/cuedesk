@@ -2129,7 +2129,8 @@ export const sessionService = {
       : null;
 
     const nowMs = now.getTime();
-    const futureCorrectionLookaheadMs = 36 * 60 * 60 * 1000;
+    const currentWindow = toBusinessDayWindowFromKey(currentBusinessDayKey);
+    const dateCorrectionWindowMs = 36 * 60 * 60 * 1000;
     const scopedRows = sortedRows.filter((row) => {
       const rowKey = row.businessDayKey ?? toBusinessDayKeyFromDate(new Date(row.startTime));
       const effectiveStart = new Date(row.startTime).getTime();
@@ -2143,24 +2144,20 @@ export const sessionService = {
         return effectiveStart <= nowMs;
       }
       return (
-        rowKey > currentBusinessDayKey &&
-        effectiveStart > nowMs &&
-        effectiveStart <= nowMs + futureCorrectionLookaheadMs &&
+        effectiveStart >= currentWindow.start.getTime() - dateCorrectionWindowMs &&
+        effectiveStart <= nowMs + dateCorrectionWindowMs &&
         row.state !== "Paid" &&
         row.state !== "Cancelled"
       );
     }).map((row) => {
       const rowKey = row.businessDayKey ?? toBusinessDayKeyFromDate(new Date(row.startTime));
-      const effectiveStart = new Date(row.startTime).getTime();
+      const isDateCorrection = scope === "current" && rowKey !== currentBusinessDayKey;
       return {
         ...row,
-        isFutureDatedCorrection:
-          scope === "current" &&
-          rowKey > currentBusinessDayKey &&
-          effectiveStart > nowMs,
+        isDateCorrection,
+        isFutureDatedCorrection: isDateCorrection && rowKey > currentBusinessDayKey,
       };
     });
-    const currentWindow = toBusinessDayWindowFromKey(currentBusinessDayKey);
     const selectedWindow = toBusinessDayWindowFromKey(selectedDayKey);
     const rangeStartWindow = selectedRange
       ? toBusinessDayWindowFromKey(selectedRange.startDate)
@@ -2294,7 +2291,7 @@ export const sessionService = {
       }
     }
 
-    const summaryRows = scopedRows.filter((row) => !row.isFutureDatedCorrection);
+    const summaryRows = scopedRows.filter((row) => !row.isDateCorrection);
     const activeRows = summaryRows.filter((row) => row.state !== "Cancelled" && row.state !== "LTP-Loss");
     const ltpRows = summaryRows.filter((row) => row.outcome === "LTP_LOSS");
     const cancelledRows = summaryRows.filter((row) => row.outcome === "CANCELLED");

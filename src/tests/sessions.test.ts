@@ -1329,7 +1329,69 @@ describe("Sessions module", () => {
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({
       id: 701,
+      isDateCorrection: true,
       isFutureDatedCorrection: true,
+      state: "Completed",
+    });
+    expect(result.summary.subtotal).toBe(0);
+    expect(result.summary.unpaid).toBe(0);
+  });
+
+  it("should surface back-dated current ledger rows for correction without counting totals", async () => {
+    const paymentsFindMany = vi.fn().mockResolvedValue([]);
+    const backdatedStart = new Date(2026, 3, 11, 19, 0, 0, 0);
+    const backdatedEnd = new Date(2026, 3, 11, 20, 0, 0, 0);
+
+    const prisma = {
+      sessions: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: 702,
+            tableId: 1,
+            playerName: "Back Date",
+            startTime: backdatedStart,
+            endTime: backdatedEnd,
+            businessDayKey: "2026-04-11",
+            status: "completed",
+            outcome: "NORMAL",
+            billId: null,
+            amount: 300,
+            cancellationReason: null,
+            canceledAt: null,
+            payerMode: "single",
+            payerData: { name: "Back Date" },
+            overrideStartTime: backdatedStart,
+            overrideEndTime: backdatedEnd,
+            overrideRatePerMin: null,
+            overridePayerMode: null,
+            overridePayerData: null,
+            overrideStatus: null,
+            overridePaymentModes: null,
+            table: { name: "S1", ratePerMin: 5 },
+          },
+        ]),
+      },
+      bills: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      payments: {
+        findMany: paymentsFindMany,
+      },
+      dailyReports: {
+        upsert: vi.fn(),
+      },
+    };
+
+    const result = await sessionService.getAllSessions(prisma as never, {
+      scope: "current",
+      now: new Date(2026, 3, 12, 12, 0, 0, 0),
+    });
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      id: 702,
+      isDateCorrection: true,
+      isFutureDatedCorrection: false,
       state: "Completed",
     });
     expect(result.summary.subtotal).toBe(0);

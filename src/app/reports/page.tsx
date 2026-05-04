@@ -100,6 +100,7 @@ type LedgerSessionRow = {
   overridePayerData: unknown;
   overrideStatus: "running" | "completed" | "billed" | null;
   overridePaymentModes: PaymentMode[] | null;
+  isDateCorrection?: boolean;
   isFutureDatedCorrection?: boolean;
 };
 
@@ -1745,7 +1746,7 @@ export default function ReportsPage() {
                   </thead>
                   <tbody>
                     {sortedRows.map((row) => {
-                      const rowTone = row.isFutureDatedCorrection
+                      const rowTone = row.isDateCorrection
                         ? "bg-rose-50 border-l-4 border-rose-500"
                         : ledgerRowColor(row.state);
 
@@ -1759,7 +1760,7 @@ export default function ReportsPage() {
                         <td className="px-2 py-2">{row.playerName}</td>
                         <td className="px-2 py-2">
                           {row.businessDayKey ?? "-"}
-                          {row.isFutureDatedCorrection ? (
+                          {row.isDateCorrection ? (
                             <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
                               Check date
                             </span>
