@@ -1340,7 +1340,7 @@ describe("Sessions module", () => {
   it("should surface back-dated current ledger rows for correction without counting totals", async () => {
     const paymentsFindMany = vi.fn().mockResolvedValue([]);
     const backdatedStart = new Date(2026, 3, 11, 19, 0, 0, 0);
-    const backdatedEnd = new Date(2026, 3, 11, 20, 0, 0, 0);
+    const backdatedEnd = new Date(2026, 3, 12, 11, 0, 0, 0);
 
     const prisma = {
       sessions: {
@@ -1396,5 +1396,57 @@ describe("Sessions module", () => {
     });
     expect(result.summary.subtotal).toBe(0);
     expect(result.summary.unpaid).toBe(0);
+  });
+
+  it("should not surface old back-dated rows that did not touch the current business day", async () => {
+    const oldStart = new Date(2026, 3, 11, 19, 0, 0, 0);
+    const oldEnd = new Date(2026, 3, 11, 20, 0, 0, 0);
+
+    const prisma = {
+      sessions: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: 703,
+            tableId: 1,
+            playerName: "Old Back Date",
+            startTime: oldStart,
+            endTime: oldEnd,
+            businessDayKey: "2026-04-11",
+            status: "completed",
+            outcome: "NORMAL",
+            billId: null,
+            amount: 300,
+            cancellationReason: null,
+            canceledAt: null,
+            payerMode: "single",
+            payerData: { name: "Old Back Date" },
+            overrideStartTime: oldStart,
+            overrideEndTime: oldEnd,
+            overrideRatePerMin: null,
+            overridePayerMode: null,
+            overridePayerData: null,
+            overrideStatus: null,
+            overridePaymentModes: null,
+            table: { name: "S1", ratePerMin: 5 },
+          },
+        ]),
+      },
+      bills: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      dailyReports: {
+        upsert: vi.fn(),
+      },
+    };
+
+    const result = await sessionService.getAllSessions(prisma as never, {
+      scope: "current",
+      now: new Date(2026, 3, 12, 12, 0, 0, 0),
+    });
+
+    expect(result.rows).toHaveLength(0);
   });
 });

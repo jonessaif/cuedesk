@@ -2143,9 +2143,17 @@ export const sessionService = {
       if (rowKey === currentBusinessDayKey) {
         return effectiveStart <= nowMs;
       }
+      const effectiveEnd = row.endTime ? new Date(row.endTime).getTime() : nowMs;
+      const isBackdatedCurrentActivity =
+        rowKey < currentBusinessDayKey &&
+        effectiveEnd >= currentWindow.start.getTime() &&
+        effectiveEnd <= nowMs + dateCorrectionWindowMs;
+      const isFutureDatedCurrentActivity =
+        rowKey > currentBusinessDayKey &&
+        effectiveStart > nowMs &&
+        effectiveStart <= nowMs + dateCorrectionWindowMs;
       return (
-        effectiveStart >= currentWindow.start.getTime() - dateCorrectionWindowMs &&
-        effectiveStart <= nowMs + dateCorrectionWindowMs &&
+        (isBackdatedCurrentActivity || isFutureDatedCurrentActivity) &&
         row.state !== "Paid" &&
         row.state !== "Cancelled"
       );
