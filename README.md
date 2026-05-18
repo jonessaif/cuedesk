@@ -309,9 +309,3 @@ isBilled = billId != null;
 ```
 
 Ledger status is derived by the backend from effective status, bill linkage, and paid amount. The UI should not compute billing truth.
-
-## LinkedIn Summary
-
-CueDesk is a production POS system for a real snooker club, shipped in 2 days through spec-driven, AI-assisted development. I wrote the PRD, designed the state machine, defined the API and data model, directed the implementation, reviewed edge cases, and packaged the system for LAN and Android use.
-
-This project demonstrates agentic coding in practice: using AI to compress implementation time while keeping product judgment, architecture, testing strategy, and production validation human-led.
