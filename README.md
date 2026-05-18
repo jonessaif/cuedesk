@@ -1,315 +1,317 @@
 # CueDesk
 
-CueDesk is a LAN-first snooker operations app for managing:
-- table sessions
-- payer assignment
-- bill creation
-- split/partial payments
-- overrides for audit-safe corrections
+Production-grade, LAN-first Point of Sale and operations system for a snooker club.
 
-It is built with Next.js + Prisma + SQLite and keeps backend logic as the single source of truth.
+Designed and shipped in 2 days using spec-driven, AI-assisted development. The repository includes the PRD, architecture notes, TDD plan, state machine, and API contracts used to direct the build.
+
+## Screenshots
+
+### Live Dashboard
+
+![CueDesk dashboard showing running snooker, pool, and PlayStation tables with the current session ledger](./docs/Dashboard.png)
+
+### Session Ledger
+
+![CueDesk reports ledger showing business performance, cash movement, receivables, and session rows](./docs/Report.png)
+
+### Analytics
+
+![CueDesk analytics showing utilization, revenue, idle time, hourly revenue, and table performance charts](./docs/Analytics.png)
+
+## What It Does
+
+CueDesk replaces paper/manual table tracking with a local POS workflow for real venue operations:
+
+- start, manage, and end snooker table sessions
+- assign single or split payers
+- generate bills from completed sessions
+- collect cash, UPI, card, and due payments
+- prevent overpayment and billing edge cases at the backend
+- track due settlement and daily closing
+- view business-day-aware ledger, analytics, expenses, and customer insights
+- run on LAN without a cloud dependency
+- operate from a web UI or Android LAN app
+
+The system is built for staff usage: fast actions, large mobile-friendly controls, backend-derived status, and minimal ambiguity during billing.
+
+## Why This Project Matters
+
+CueDesk was built as a practical demonstration of agentic coding and AI-assisted software delivery.
+
+The goal was not to "prompt an app into existence." The goal was to compress the implementation cycle while preserving real engineering discipline:
+
+- wrote the product requirements document before implementation
+- designed the session lifecycle as an explicit state machine
+- defined backend API contracts and Prisma data models
+- kept business rules in services instead of the UI
+- used a TDD plan to protect billing, payment, payer, and override logic
+- packaged the system for local production use and Android access
+
+AI accelerated the code generation. Human engineering judgment still drove the product decisions, architecture, validation rules, and production tradeoffs.
+
+## Core Architecture
+
+CueDesk uses a backend-first architecture where the database and service layer are the source of truth.
+
+```text
+UI -> API route -> service/business rule -> Prisma/SQLite -> backend-derived response
+```
+
+Important rules:
+
+- UI displays state; it does not decide billing truth.
+- Billing truth is based on `billId != null`, not a status label.
+- Effective session status is derived with `overrideStatus ?? status`.
+- Payments are validated against discounted remaining totals.
+- Ledger windows follow a configurable business-day reset time.
+- Role checks are enforced by backend APIs.
+
+See:
+
+- [PRD](./prd.md)
+- [Design Index](./design.md)
+- [Architecture](./docs/architecture.md)
+- [State Machine](./docs/state-machine.md)
+- [API Reference](./docs/api-reference.md)
+- [TDD Plan](./tdd-plan.md)
 
 ## Tech Stack
-- Next.js (App Router)
+
+- Next.js App Router
+- React
 - TypeScript
 - Prisma ORM
-- SQLite (`prisma/dev.db`)
+- SQLite
 - Tailwind CSS
 - Vitest
+- Capacitor Android
 
-## Core Features
-- Table dashboard with derived states (`Free`, running variants, `Completed (Unbilled)`, `Billed`)
-- Session lifecycle: start, assign payer, end
-- Session outcome handling: `NORMAL`, `LTP_LOSS`, `CANCELLED`
-- Session override system:
-  - optional override start/end/rate
-  - optional override payer mode/data
-  - optional override status/payment modes
-- Billing:
-  - create bills from completed sessions
-  - bill-level discounts (`fixed`, `percent`)
-  - discount updates after bill creation
-- Payments:
-  - multiple payments per bill
-  - `cash` / `upi` / `card` / `due`
-  - strict no-overpay validation against discounted totals
-  - due settlement tracking (`dueReceivedMode`, `dueSettledAt`)
-- Ledger:
-  - business-day aware reporting window (ledger reset time configurable, default 10 AM)
-  - backend-derived revenue, collection, and status summaries
-  - due-received visibility (included in collection modes)
-  - grouped by bill context
-  - daily snapshot storage (`DailyReport`)
-  - analytics: table idle time, table-wise revenue/runtime, and hour-wise best/slow periods
-  - revenue trend chart: day-wise for multi-day ranges, hour-wise for single day
-  - chart mode in reports:
-    - all tables: horizontal table-revenue comparison bars
-    - single table: bar trend (day-wise/hour-wise based on selected range)
-  - analytics can be filtered table-wise
-  - chart settings support global or table-level overrides (`auto/day/hour`, merged hour buckets, include/exclude closed bars)
-  - default hourly chart includes a combined `08-11` bucket (cafe closed window)
-  - reports tab-based lazy loading (`ledger`/`analytics`) with date-keyed client cache
-  - background prefetch for inactive report tab (faster tab switches)
-  - consolidated reporting APIs:
-    - `/api/ledger?date=YYYY-MM-DD`
-    - `/api/analytics?date=YYYY-MM-DD`
-  - live dashboard aggregation via `/api/dashboard-live` (single call replacing multiple polling calls)
-  - short in-memory API dedupe cache for concurrent live-dashboard requests
-- Customer Insights:
-  - payer-identity based customer metrics from bill/session/payment data
-  - top customers, high-value segmentation, at-risk detection, action-required view
-  - date-range filter + configurable top-N view
-  - split payer bill allocation by payer percentage with rounded shares
-- Daily Closing:
-  - dedicated `/reports/daily-closing` page and `/api/reports/daily-closing`
-  - auto opening from previous day (prefers previous actual cash if entered)
-  - business-day aligned table sales and due-received calculations
-  - manual food/accessory sales + due-received support (kept separate from table sales)
-  - live closing preview while editing values
-- Expenses:
-  - dedicated `/reports/expenses` page
-  - category CRUD (`/api/expenses/categories`, `/api/expenses/categories/[id]`)
-  - expense entry log (`/api/expenses/entries`) with date/mode/category filters
-  - quick date presets and category-wise totals
-- Auth and security:
-  - PIN-based login (`4` digits)
-  - mobile numeric keypad with auto-submit at 4 digits
-  - persisted local auth (`localStorage`) + auto-login
-  - auto logout after 2 hours inactivity
-  - role-based access (`admin`, `operator`)
-  - backend role checks on all APIs
-- Management:
-  - table management (`create`, `edit`, `remove`)
-  - section management (`create`, `edit`, `remove`)
-  - user management with roles (`operator`, `admin`)
-  - configurable ledger reset time (once every 24 hours)
+## Feature Highlights
+
+### Table and Session Operations
+
+- table dashboard with derived states:
+  - `Free`
+  - `Running-NoPayer`
+  - `Running-Single`
+  - `Running-Split`
+  - `Completed (Unbilled)`
+  - `Billed`
+- session start/end lifecycle
+- live timers for running sessions
+- normal, cancelled, and LTP-loss outcomes
+- override support for audit-safe corrections
+- special hourly-bucket pricing for PS tables
+
+### Billing and Payments
+
+- bill creation from completed sessions
+- bill-level fixed or percentage discounts
+- split and partial payment support
+- `cash`, `upi`, `card`, and `due` payment modes
+- backend no-overpay validation
+- due tracking and settlement support
+- customer-linked dues by name/phone
+
+### Ledger, Reporting, and Analytics
+
+- configurable business-day reset time, defaulting to 10 AM
+- ledger views by current day, selected day, or range
+- revenue, collection, due, unpaid, and balance summaries
+- daily report snapshots
+- table-wise revenue and runtime analytics
+- idle-time and best/slow-hour reporting
+- single-table and all-table chart modes
+- report tab caching and background prefetching
+
+### Customer and Operations Tools
+
+- customer insights from payer, bill, session, and payment data
+- top-customer, high-value, at-risk, and action-required segments
+- daily closing with opening balance, manual sales, dues, expenses, and live preview
+- expense category management and expense entry log
+- table, section, user, and settings management
+
+### Auth and Access Control
+
+- PIN-based login
+- mobile numeric keypad
+- local persisted auth with inactivity timeout
+- `admin` and `operator` roles
+- admin-only management route
+- backend authorization checks across APIs
+
+### Android LAN App
+
+The Android app is built with Capacitor and points at the local CueDesk server.
+
+- first-launch server setup screen
+- configurable host and port
+- reachability validation before opening the WebView
+- server settings accessible from Android headers
+- cleartext HTTP enabled for local LAN usage
 
 ## Project Structure
-`src/app/page.tsx`  
-Main dashboard + ledger + billing/payment UI.
 
-`src/app/api/*`  
-Route handlers for sessions, bills, payments, tables.
-
-`src/app/api/dashboard-live/route.ts`  
-Single aggregated dashboard payload (`tables`, `unpaid`, `completed`, `all`) with short TTL cache.
-
-`src/app/api/ledger/route.ts` and `src/app/api/analytics/route.ts`  
-Unified report APIs used by the Reports page.
-
-`src/app/api/customer-insights/route.ts`  
-Customer-level metrics and risk segments.
-
-`src/app/api/reports/daily-closing/route.ts`  
-Daily closing snapshot and update endpoint.
-
-`src/app/api/expenses/*`  
-Expense categories and entries APIs.
-
-`src/app/reports/customers/page.tsx`  
-Customer insights UI.
-
-`src/app/reports/daily-closing/page.tsx`  
-Daily closing UI.
-
-`src/app/reports/expenses/page.tsx`  
-Expenses management and entry UI.
-
-`src/components/auth-provider.tsx`  
-Global auth store/provider (login, persistence, inactivity timeout, auth headers).
-
-`src/lib/services/*`  
-Business logic (session, payer, billing, payment, timer).
-
-`src/lib/authz.ts`  
-Authorization helpers (`requireRole`, `requireOperatorOrAdmin`, bootstrap support).
-
-`src/lib/session-status.ts`  
-Centralized effective status + ledger/table status derivation.
-
-`src/lib/state-machine.ts`  
-State ordering and transition guards.
-
-`src/lib/tables-service.ts`  
-Table CRUD + table state derivation.
-
-`src/tests/*`  
-Unit tests for modules and edge cases.
-
-`scripts/backfill-session-bill-links.ts`  
-Safe backfill utility for legacy billed sessions missing `billId`.
+```text
+src/app/page.tsx                         Main POS dashboard and billing UI
+src/app/api/**                           API routes for sessions, bills, reports, auth, management
+src/app/reports/**                       Reports, customer insights, daily closing, expenses
+src/components/auth-provider.tsx         Auth state, persistence, inactivity timeout, auth headers
+src/lib/services/**                      Domain services for sessions, billing, payments, customers
+src/lib/session-status.ts                Centralized status derivation
+src/lib/state-machine.ts                 Lifecycle ordering and transition guards
+src/lib/tables-service.ts                Table CRUD and table-state derivation
+src/lib/authz.ts                         Backend role authorization helpers
+src/tests/**                             Unit tests for core business rules and edge cases
+prisma/schema.prisma                     Data model
+docs/**                                  Architecture, state machine, API docs, setup docs
+scripts/**                               Backfills, benchmarks, packaging utilities
+```
 
 ## Setup
-1. Install dependencies:
+
+Install dependencies:
+
 ```bash
 npm install
 ```
 
-2. Configure env:
+Create `.env`:
+
 ```bash
-# .env
 DATABASE_URL="file:./prisma/dev.db"
 ```
 
-3. Sync Prisma schema to local DB:
+Sync the database and generate Prisma client:
+
 ```bash
 npx prisma db push
-```
-
-4. Generate Prisma client (if needed):
-```bash
 npx prisma generate
 ```
 
-5. Run dev server:
+Run the development server:
+
 ```bash
 npm run dev
 ```
 
-## Scripts
-- `npm run dev` - start development server
-- `npm run build` - production build
-- `npm run start` - run production server on `0.0.0.0`
-- `npm test` - run unit tests
-- `npm run test:watch` - run tests in watch mode
-- `npm run backfill:bills` - backfill missing `billId` on legacy billed sessions
-- `npm run backfill:business-day-keys` - fill legacy `businessDayKey` values
-- `npm run backfill:ledger-demo` - seed preview ledger/demo data
-- `npm run backfill:daily-closing` - populate historical daily-closing snapshots
-- `npm run backfill:expenses` - seed historical expense categories/entries
-- `npm run package:server` - create deployable server archive for another machine
+Open:
 
-Utility scripts:
-- `scripts/benchmark-apis.sh` - sequential API benchmark summary
-- `scripts/benchmark-apis-concurrent.sh` - concurrent API benchmark (p50/p95/p99)
+```text
+http://localhost:3000
+```
 
 ## LAN Usage
-Start server and open from other devices on the same network:
-- `http://<your-lan-ip>:3000`
 
-For production:
+Start the server and open it from other devices on the same Wi-Fi:
+
 ```bash
 npm run build
 npm run start
 ```
 
-## Android LAN App (Capacitor)
-CueDesk Android app now supports runtime local server setup:
-- On first launch, app opens **Server Setup** screen.
-- Enter server `IP/Host` + `Port` (for example `192.168.1.50` and `3000`).
-- App saves this and opens CueDesk in WebView.
-- A **Server** button is available in Android headers to reopen setup from anywhere.
-- Server setup validates host/port reachability before opening the app WebView.
+Then open:
 
-Requirements:
-- Phone and server must be on same Wi-Fi.
-- Run server on all interfaces:
-```bash
-npm run start -- -H 0.0.0.0 -p 3000
+```text
+http://<your-lan-ip>:3000
 ```
 
-Build/sync Android project:
+For Android physical devices, use the real LAN IP of the server machine.
+
+## Android Build
+
+Sync and open the Android project:
+
 ```bash
 npx cap sync android
 npx cap open android
 ```
 
+Build debug APK:
+
+```bash
+npm run android:build:debug
+```
+
 Notes:
-- Android manifest enables cleartext HTTP for local LAN (`http://`).
-- If server is unreachable, app shows a short toast and returns to server setup.
-- Emulator host mapping: use `10.0.2.2` to reach host machine server.
-- Physical device should use real LAN IP (for example `192.168.1.50`).
 
-## Status and Billing Truth Rules
-- `effectiveStatus = overrideStatus ?? status`
-- Billing is determined by `billId != null` (not status string alone)
-- Ledger status is backend-derived from effective status + bill linkage + paid amount
-- UI should not compute billing truth; UI only displays backend outputs
+- phone and server must be on the same Wi-Fi
+- production server runs on `0.0.0.0`
+- emulator host mapping can use `10.0.2.2`
+- physical devices should use the server machine's LAN IP
 
-## Management and Permissions
-- Roles:
-  - `operator`: session, billing, payments, reports
-  - `admin`: full access, including management
-- Management route:
-  - `/management` is admin-only
-  - unauthorized users are redirected to `/access-denied`
-- API auth:
-  - all APIs require authenticated user context except `/api/auth/login`
-  - send active user via request header:
-  - `x-user-id: <user-id>`
-- Admin-only APIs include:
-  - tables create/update/delete
-  - users create/list/update/delete
-  - table sections create/list/update/delete
-  - settings (ledger reset) get/update
-- Bootstrap mode:
-  - if `users` table is empty, management endpoints are allowed to help create the first admin.
+## Scripts
 
-## Authentication UX
-- Login screen is centered and mobile friendly.
-- Numeric keypad is provided for fast PIN entry.
-- Login auto-submits when PIN length reaches 4.
-- Active user is shown in header.
-- `Logout` is available in the header.
-- Auto logout happens after 2 hours of inactivity.
-- PIN validation is done on backend and stored as bcrypt hash (`bcryptjs`).
+```bash
+npm run dev                         # start development server
+npm run build                       # production build
+npm run start                       # run production server on 0.0.0.0
+npm test                            # run unit tests
+npm run test:watch                  # run tests in watch mode
+npm run package:server              # create deployable server archive
+npm run seed:reset-demo             # reset and seed demo data
+npm run backfill:bills              # backfill missing billId values
+npm run backfill:business-day-keys  # backfill legacy business day keys
+npm run backfill:daily-closing      # populate historical closing snapshots
+npm run backfill:expenses           # seed historical expense categories/entries
+```
 
-## Rate Rules
-- Regular tables: per-minute billing
-- PS tables (`name` starts with `PS`): hourly bucket billing using ceil-hours
-  - Example: `1m` => `1 hour`
-  - Example: `1h20m` => `2 hours`
+Benchmark utilities:
 
-## Discount Rules
-- Applied at bill level only
-- `fixed`: subtract fixed amount, clamp final to `>= 0`
-- `percent`: 0..100 only
-- Payments validate against discounted bill total
-- Discount update is blocked if fixed discount exceeds current remaining amount
-
-## Business Day Reporting
-- Business day boundary is configurable via management settings (default `10:00 AM` local time).
-- `current` report scope: reset time to now.
-- `day` scope: selected day key (`YYYY-MM-DD`) mapped to reset time -> next day same reset time.
-- `range` scope: inclusive business-day keys.
-- Daily summary includes:
-  - Revenue: `subtotal`, `discount`, `net`
-  - Collection: `cash`, `upi`, `card`, `due`, `dueReceived`
-  - Status: `paid`, `unpaid`, `total`, `isBalanced`
-- Note: `dueReceived` is informational and already included in `cash`/`upi`/`card`.
+```bash
+scripts/benchmark-apis.sh
+scripts/benchmark-apis-concurrent.sh
+```
 
 ## Key API Endpoints
-- Live dashboard:
-  - `GET /api/dashboard-live?scope=current|day|range&date=YYYY-MM-DD&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`
-- Reports:
-  - `GET /api/ledger?date=YYYY-MM-DD`
-  - `GET /api/analytics?date=YYYY-MM-DD`
-- Customers:
-  - `GET /api/customer-insights?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&topN=all|<number>`
-- Daily closing:
-  - `GET /api/reports/daily-closing?date=YYYY-MM-DD`
-  - `POST /api/reports/daily-closing` (save manual values)
-- Expenses:
-  - `GET/POST /api/expenses/categories`
-  - `PATCH/DELETE /api/expenses/categories/:id`
-  - `GET/POST /api/expenses/entries`
 
-## Design Docs
-See:
-- [design.md](./design.md)
-- [Architecture](./docs/architecture.md)
-- [State Machine](./docs/state-machine.md)
-- [API Reference](./docs/api-reference.md)
+- `POST /api/auth/login`
+- `GET /api/dashboard-live`
+- `POST /api/session/start`
+- `POST /api/session/end`
+- `POST /api/session/assign-payer`
+- `POST /api/session/override`
+- `POST /api/bill/create`
+- `POST /api/payment/add`
+- `GET /api/ledger`
+- `GET /api/analytics`
+- `GET /api/customer-insights`
+- `GET /api/reports/daily-closing`
+- `POST /api/reports/daily-closing`
+- `GET /api/expenses/categories`
+- `GET /api/expenses/entries`
+
+Route-level request and response details are documented in [API Reference](./docs/api-reference.md).
 
 ## Testing
+
 Run:
+
 ```bash
 npm test
 ```
 
 Tests cover:
-- session lifecycle and overrides
+
+- session lifecycle and override behavior
 - payer validation
-- billing + discount logic
-- payment edge cases
+- billing and discount calculations
+- payment edge cases, including overpay prevention
 - status derivation helpers
+- user management and auth-related rules
+
+## Status and Billing Truth Rules
+
+```ts
+effectiveStatus = overrideStatus ?? status;
+isBilled = billId != null;
+```
+
+Ledger status is derived by the backend from effective status, bill linkage, and paid amount. The UI should not compute billing truth.
+
+## LinkedIn Summary
+
+CueDesk is a production POS system for a real snooker club, shipped in 2 days through spec-driven, AI-assisted development. I wrote the PRD, designed the state machine, defined the API and data model, directed the implementation, reviewed edge cases, and packaged the system for LAN and Android use.
+
+This project demonstrates agentic coding in practice: using AI to compress implementation time while keeping product judgment, architecture, testing strategy, and production validation human-led.

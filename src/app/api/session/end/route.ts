@@ -27,11 +27,35 @@ export async function POST(request: Request) {
     if (Number.isNaN(now.getTime())) {
       return Response.json({ error: "Invalid endTime" }, { status: 400 });
     }
+    const complimentaryMinutes =
+      body.complimentaryMinutes === undefined
+        ? undefined
+        : Number(body.complimentaryMinutes);
+    const complimentaryReason =
+      body.complimentaryReason === undefined
+        ? undefined
+        : typeof body.complimentaryReason === "string"
+          ? body.complimentaryReason.trim()
+          : null;
+    if (
+      complimentaryMinutes !== undefined &&
+      (!Number.isFinite(complimentaryMinutes) || complimentaryMinutes < 0)
+    ) {
+      return Response.json({ error: "Invalid complimentaryMinutes" }, { status: 400 });
+    }
+    if (complimentaryReason === null) {
+      return Response.json({ error: "Invalid complimentaryReason" }, { status: 400 });
+    }
+    if ((complimentaryMinutes ?? 0) > 0 && !complimentaryReason) {
+      return Response.json({ error: "Complimentary reason is required" }, { status: 400 });
+    }
 
     const session = await sessionService.endSession(prisma as never, {
       tableId: body.tableId,
       now,
       outcome: outcomeRaw as "NORMAL" | "LTP_LOSS",
+      complimentaryMinutes,
+      complimentaryReason,
     });
 
     return Response.json(session, { status: 200 });

@@ -133,6 +133,21 @@ function calculateDurationMinutes(startTime: Date, endTime: Date | null): number
   return minutes > 0 ? minutes : 0;
 }
 
+function normalizeComplimentaryMinutes(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+function normalizeComplimentaryReason(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 function isHourlyTable(tableName: string | undefined): boolean {
   if (!tableName) {
     return false;
@@ -145,12 +160,14 @@ function calculateAmount(
   endTime: Date | null,
   ratePerMin: number,
   tableName?: string,
+  complimentaryMinutes = 0,
 ): number {
   if (!endTime) {
     return 0;
   }
 
-  const diffMs = endTime.getTime() - startTime.getTime();
+  const complimentaryMs = normalizeComplimentaryMinutes(complimentaryMinutes) * 60000;
+  const diffMs = endTime.getTime() - startTime.getTime() - complimentaryMs;
   if (diffMs <= 0) {
     return 0;
   }
@@ -297,6 +314,8 @@ type SessionOverrideAuditSource = {
   overrideStartTime?: Date | null;
   overrideEndTime?: Date | null;
   overrideRatePerMin?: number | null;
+  complimentaryMinutes?: number | null;
+  complimentaryReason?: string | null;
   overridePayerMode?: string | null;
   overridePayerData?: unknown;
   overrideStatus?: string | null;
@@ -327,6 +346,8 @@ function buildOverrideAuditSnapshot(session: SessionOverrideAuditSource) {
     overrideStartTime: toIso(session.overrideStartTime),
     overrideEndTime: toIso(session.overrideEndTime),
     overrideRatePerMin: session.overrideRatePerMin ?? null,
+    complimentaryMinutes: normalizeComplimentaryMinutes(session.complimentaryMinutes),
+    complimentaryReason: normalizeComplimentaryReason(session.complimentaryReason),
     overridePayerMode: session.overridePayerMode ?? null,
     overridePayerData: session.overridePayerData ?? null,
     overrideStatus: session.overrideStatus ?? null,
@@ -471,7 +492,13 @@ export const sessionService = {
 
   async endSession(
     prisma: unknown,
-    input: { tableId: number; now: Date; outcome?: "NORMAL" | "LTP_LOSS" },
+    input: {
+      tableId: number;
+      now: Date;
+      outcome?: "NORMAL" | "LTP_LOSS";
+      complimentaryMinutes?: number;
+      complimentaryReason?: string;
+    },
   ) {
     await ensureLedgerResetHydrated(prisma);
     const sessionModel = (prisma as { session?: unknown; sessions?: unknown }).session ??
@@ -502,6 +529,8 @@ export const sessionService = {
       overrideStartTime?: Date | null;
       overrideEndTime?: Date | null;
       overrideRatePerMin?: number | null;
+      complimentaryMinutes?: number | null;
+      complimentaryReason?: string | null;
     } | null;
 
     if (!session) {
@@ -517,6 +546,11 @@ export const sessionService = {
     const effectiveStartTime = getEffectiveStartTime(session);
     const effectiveEndTime = input.now;
     const effectiveRatePerMin = getEffectiveRatePerMin(session, table.ratePerMin);
+    const complimentaryMinutes = normalizeComplimentaryMinutes(input.complimentaryMinutes);
+    const complimentaryReason = normalizeComplimentaryReason(input.complimentaryReason);
+    if (complimentaryMinutes > 0 && !complimentaryReason) {
+      throw new Error("Complimentary reason is required");
+    }
     const durationMinutes = calculateDurationMinutes(effectiveStartTime, effectiveEndTime);
     if (durationMinutes <= 0) {
       throw new Error("Cannot end session with 0 minutes");
@@ -526,6 +560,7 @@ export const sessionService = {
       effectiveEndTime,
       effectiveRatePerMin,
       table.name,
+      complimentaryMinutes,
     );
 
     return (
@@ -536,6 +571,8 @@ export const sessionService = {
             status: string;
             endTime: Date;
             amount: number;
+            complimentaryMinutes: number;
+            complimentaryReason: string | null;
             outcome: "NORMAL" | "LTP_LOSS";
             overrideStatus: null;
           };
@@ -547,6 +584,8 @@ export const sessionService = {
         status: "completed",
         endTime: input.now,
         amount: input.outcome === "LTP_LOSS" ? 0 : amount,
+        complimentaryMinutes,
+        complimentaryReason,
         outcome: input.outcome ?? "NORMAL",
         overrideStatus: null,
       },
@@ -710,6 +749,8 @@ export const sessionService = {
       overrideStartTime?: Date;
       overrideEndTime?: Date;
       overrideRatePerMin?: number;
+      complimentaryMinutes?: number;
+      complimentaryReason?: string | null;
       overridePayerMode?: "none" | "single" | "split";
       overridePayerData?: unknown;
       overrideStatus?: "running" | "completed" | "billed" | "default";
@@ -756,6 +797,8 @@ export const sessionService = {
       overrideStartTime?: Date | null;
       overrideEndTime?: Date | null;
       overrideRatePerMin?: number | null;
+      complimentaryMinutes?: number | null;
+      complimentaryReason?: string | null;
       overridePayerMode?: string | null;
       overridePayerData?: unknown;
       overrideStatus?: string | null;
@@ -894,13 +937,16 @@ export const sessionService = {
     const hasOverridePlayerName = overridePlayerName !== undefined;
     const hasOverrideEnd = input.overrideEndTime !== undefined;
     const hasOverrideRate = input.overrideRatePerMin !== undefined;
+    const hasComplimentaryMinutes = input.complimentaryMinutes !== undefined;
+    const hasComplimentaryReason = input.complimentaryReason !== undefined;
+    const hasComplimentary = hasComplimentaryMinutes || hasComplimentaryReason;
     const hasOverridePayer = input.overridePayerMode !== undefined || input.overridePayerData !== undefined;
     const hasOverrideStatus = input.overrideStatus !== undefined && input.overrideStatus !== "default";
     const hasOverrideOutcome = input.overrideOutcome !== undefined;
     const hasOverridePaymentModes = input.overridePaymentModes !== undefined;
 
     if (currentLifecycleState === "Running") {
-      if (hasOverrideEnd || hasOverrideStatus || hasOverrideOutcome || hasOverridePaymentModes) {
+      if (hasOverrideEnd || hasOverrideStatus || hasOverrideOutcome || hasOverridePaymentModes || hasComplimentary) {
         throw new Error("Running overrides allow player name, start time, rate, or payer details");
       }
       if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideRate && !hasOverridePayer) {
@@ -910,9 +956,9 @@ export const sessionService = {
 
     if (currentLifecycleState === "Completed") {
       if (hasOverrideStatus || hasOverridePaymentModes) {
-        throw new Error("Completed overrides allow player name, start time, end time, rate, or payer details");
+        throw new Error("Completed overrides allow player name, start time, end time, rate, complimentary minutes, or payer details");
       }
-      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideEnd && !hasOverrideRate && !hasOverridePayer && !hasOverrideOutcome) {
+      if (!hasOverridePlayerName && !hasOverrideStart && !hasOverrideEnd && !hasOverrideRate && !hasOverridePayer && !hasOverrideOutcome && !hasComplimentary) {
         throw new Error("No allowed override fields for completed session");
       }
     }
@@ -924,6 +970,7 @@ export const sessionService = {
         hasOverrideStart ||
         hasOverrideEnd ||
         hasOverrideRate ||
+        hasComplimentary ||
         hasOverridePayer ||
         hasOverrideOutcome ||
         hasOverridePaymentModes
@@ -939,6 +986,7 @@ export const sessionService = {
         hasOverrideStart ||
         hasOverrideEnd ||
         hasOverrideRate ||
+        hasComplimentary ||
         hasOverridePayer ||
         hasOverrideOutcome ||
         hasOverridePaymentModes
@@ -966,6 +1014,15 @@ export const sessionService = {
       input.overrideRatePerMin ??
       session.overrideRatePerMin ??
       table.ratePerMin;
+    const complimentaryMinutes = normalizeComplimentaryMinutes(
+      input.complimentaryMinutes ?? session.complimentaryMinutes,
+    );
+    const complimentaryReason = hasComplimentaryReason
+      ? normalizeComplimentaryReason(input.complimentaryReason)
+      : normalizeComplimentaryReason(session.complimentaryReason);
+    if (complimentaryMinutes > 0 && !complimentaryReason) {
+      throw new Error("Complimentary reason is required");
+    }
 
     if (
       effectiveStatus !== "running" &&
@@ -1010,6 +1067,7 @@ export const sessionService = {
       effectiveEndTime,
       effectiveRatePerMin,
       table.name,
+      complimentaryMinutes,
     );
     const nextOutcome = input.overrideOutcome ?? session.outcome ?? "NORMAL";
     if (nextOutcome === "LTP_LOSS" && isBilled({ billId: session.billId })) {
@@ -1068,6 +1126,8 @@ export const sessionService = {
       overrideStartTime: session.overrideStartTime ?? null,
       overrideEndTime: session.overrideEndTime ?? null,
       overrideRatePerMin: session.overrideRatePerMin ?? null,
+      complimentaryMinutes: session.complimentaryMinutes ?? 0,
+      complimentaryReason: session.complimentaryReason ?? null,
       overridePayerMode: session.overridePayerMode ?? null,
       overridePayerData: session.overridePayerData ?? null,
       overrideStatus: session.overrideStatus ?? null,
@@ -1103,6 +1163,8 @@ export const sessionService = {
             playerName?: string;
             overrideEndTime?: Date | null;
             overrideRatePerMin?: number;
+            complimentaryMinutes?: number;
+            complimentaryReason?: string | null;
             overridePayerMode?: string;
             overridePayerData?: unknown;
             overrideStatus?: string | null;
@@ -1124,6 +1186,8 @@ export const sessionService = {
         ...(typeof input.overrideRatePerMin === "number"
           ? { overrideRatePerMin: input.overrideRatePerMin }
           : {}),
+        ...(hasComplimentaryMinutes ? { complimentaryMinutes } : {}),
+        ...(hasComplimentaryReason ? { complimentaryReason } : {}),
         ...(input.overridePayerMode !== undefined
           ? { overridePayerMode: input.overridePayerMode }
           : {}),
@@ -1159,6 +1223,8 @@ export const sessionService = {
       overrideStartTime?: Date | null;
       overrideEndTime?: Date | null;
       overrideRatePerMin?: number | null;
+      complimentaryMinutes?: number | null;
+      complimentaryReason?: string | null;
       overridePayerMode?: string | null;
       overridePayerData?: unknown;
       overrideStatus?: string | null;
@@ -1267,6 +1333,8 @@ export const sessionService = {
             status: true;
             billId: true;
             amount: true;
+            complimentaryMinutes: true;
+            complimentaryReason: true;
             cancellationReason: true;
             canceledAt: true;
           };
@@ -1277,6 +1345,8 @@ export const sessionService = {
           status?: "running" | "completed" | "billed";
           billId?: number | null;
           amount?: number | null;
+          complimentaryMinutes?: number | null;
+          complimentaryReason?: string | null;
           cancellationReason?: string | null;
           canceledAt?: Date | null;
         } | null>;
@@ -1290,6 +1360,8 @@ export const sessionService = {
         status: true,
         billId: true,
         amount: true,
+        complimentaryMinutes: true,
+        complimentaryReason: true,
         cancellationReason: true,
         canceledAt: true,
       },
@@ -1423,6 +1495,8 @@ export const sessionService = {
           { field: "status", before: "running", after: session.status ?? "completed" },
           { field: "endTime", before: null, after: session.endTime.toISOString() },
           { field: "amount", before: null, after: typeof session.amount === "number" ? session.amount : 0 },
+          { field: "complimentaryMinutes", before: null, after: normalizeComplimentaryMinutes(session.complimentaryMinutes) },
+          { field: "complimentaryReason", before: null, after: normalizeComplimentaryReason(session.complimentaryReason) },
         ],
         createdAt: session.endTime,
       });
@@ -1595,6 +1669,8 @@ export const sessionService = {
             overrideStartTime?: Date | null;
             overrideEndTime?: Date | null;
             overrideRatePerMin?: number | null;
+            complimentaryMinutes?: number | null;
+            complimentaryReason?: string | null;
             overridePayerMode?: string | null;
             overridePayerData?: unknown;
             overrideStatus?: string | null;
@@ -1625,6 +1701,8 @@ export const sessionService = {
       overrideStartTime?: Date | null;
       overrideEndTime?: Date | null;
       overrideRatePerMin?: number | null;
+      complimentaryMinutes?: number | null;
+      complimentaryReason?: string | null;
       overridePayerMode?: string | null;
       overridePayerData?: unknown;
       overrideStatus?: string | null;
@@ -1644,27 +1722,32 @@ export const sessionService = {
       const effectiveEndTime = getEffectiveEndTime(row);
       const effectiveRatePerMin = getEffectiveRatePerMin(row, row.table.ratePerMin);
       const durationMinutes = calculateDurationMinutes(effectiveStartTime, effectiveEndTime);
-        const amount = calculateAmount(
-          effectiveStartTime,
-          effectiveEndTime,
-          effectiveRatePerMin,
-          row.table.name,
-        );
+      const amount = calculateAmount(
+        effectiveStartTime,
+        effectiveEndTime,
+        effectiveRatePerMin,
+        row.table.name,
+        row.complimentaryMinutes ?? 0,
+      );
 
-        return {
-          id: row.id,
+      return {
+        id: row.id,
         tableName: row.table.name,
         playerName: row.playerName,
         durationMinutes,
-          amount: row.outcome === "LTP_LOSS" || row.outcome === "CANCELLED" ? 0 : amount,
-          payerMode: getEffectivePayerMode(row),
-          payerData: getEffectivePayerData(row),
-        };
+        complimentaryMinutes: normalizeComplimentaryMinutes(row.complimentaryMinutes),
+        complimentaryReason: normalizeComplimentaryReason(row.complimentaryReason),
+        amount: row.outcome === "LTP_LOSS" || row.outcome === "CANCELLED" ? 0 : amount,
+        payerMode: getEffectivePayerMode(row),
+        payerData: getEffectivePayerData(row),
+      };
     }).filter((row): row is {
       id: number;
       tableName: string;
       playerName: string;
       durationMinutes: number;
+      complimentaryMinutes: number;
+      complimentaryReason: string | null;
       amount: number;
       payerMode: "none" | "single" | "split";
       payerData: unknown;
@@ -1716,6 +1799,8 @@ export const sessionService = {
             overrideStartTime?: Date | null;
             overrideEndTime?: Date | null;
             overrideRatePerMin?: number | null;
+            complimentaryMinutes?: number | null;
+            complimentaryReason?: string | null;
             overridePayerMode?: string | null;
             overridePayerData?: unknown;
             overrideStatus?: string | null;
@@ -1746,6 +1831,8 @@ export const sessionService = {
       overrideStartTime?: Date | null;
       overrideEndTime?: Date | null;
       overrideRatePerMin?: number | null;
+      complimentaryMinutes?: number | null;
+      complimentaryReason?: string | null;
       overridePayerMode?: string | null;
       overridePayerData?: unknown;
       overrideStatus?: string | null;
@@ -1843,6 +1930,7 @@ export const sessionService = {
         effectiveEndTime,
         effectiveRatePerMin,
         row.table.name,
+        row.complimentaryMinutes ?? 0,
       );
       const outcome = normalizeSessionOutcome(row.outcome);
       const isNonChargeOutcome = outcome === "LTP_LOSS" || outcome === "CANCELLED";
@@ -1855,8 +1943,18 @@ export const sessionService = {
         effectiveEndTime,
         effectiveRatePerMin,
         durationMinutes,
+        complimentaryMinutes: normalizeComplimentaryMinutes(row.complimentaryMinutes),
+        complimentaryReason: normalizeComplimentaryReason(row.complimentaryReason),
         amount,
-        ltpValue: outcome === "LTP_LOSS" ? calculatedAmount : 0,
+        ltpValue: outcome === "LTP_LOSS"
+          ? calculateAmount(
+            effectiveStartTime,
+            effectiveEndTime,
+            effectiveRatePerMin,
+            row.table.name,
+            0,
+          )
+          : 0,
       };
     });
 
@@ -1973,6 +2071,8 @@ export const sessionService = {
           originalEndTime: row.endTime,
           endTime: row.effectiveEndTime,
           durationMinutes: row.durationMinutes,
+          complimentaryMinutes: row.complimentaryMinutes,
+          complimentaryReason: row.complimentaryReason,
           originalRatePerMin: row.table.ratePerMin,
           ratePerMin: row.effectiveRatePerMin,
           amount: row.amount,
@@ -2029,21 +2129,43 @@ export const sessionService = {
       : null;
 
     const nowMs = now.getTime();
+    const currentWindow = toBusinessDayWindowFromKey(currentBusinessDayKey);
+    const dateCorrectionWindowMs = 36 * 60 * 60 * 1000;
     const scopedRows = sortedRows.filter((row) => {
       const rowKey = row.businessDayKey ?? toBusinessDayKeyFromDate(new Date(row.startTime));
+      const effectiveStart = new Date(row.startTime).getTime();
       if (scope === "day") {
         return rowKey === selectedDayKey;
       }
       if (scope === "range" && selectedRange) {
         return rowKey >= selectedRange.startDate && rowKey <= selectedRange.endDate;
       }
-      if (rowKey !== currentBusinessDayKey) {
-        return false;
+      if (rowKey === currentBusinessDayKey) {
+        return effectiveStart <= nowMs;
       }
-      const effectiveStart = new Date(row.startTime).getTime();
-      return effectiveStart <= nowMs;
+      const effectiveEnd = row.endTime ? new Date(row.endTime).getTime() : nowMs;
+      const isBackdatedCurrentActivity =
+        rowKey < currentBusinessDayKey &&
+        effectiveEnd >= currentWindow.start.getTime() &&
+        effectiveEnd <= nowMs + dateCorrectionWindowMs;
+      const isFutureDatedCurrentActivity =
+        rowKey > currentBusinessDayKey &&
+        effectiveStart > nowMs &&
+        effectiveStart <= nowMs + dateCorrectionWindowMs;
+      return (
+        (isBackdatedCurrentActivity || isFutureDatedCurrentActivity) &&
+        row.state !== "Paid" &&
+        row.state !== "Cancelled"
+      );
+    }).map((row) => {
+      const rowKey = row.businessDayKey ?? toBusinessDayKeyFromDate(new Date(row.startTime));
+      const isDateCorrection = scope === "current" && rowKey !== currentBusinessDayKey;
+      return {
+        ...row,
+        isDateCorrection,
+        isFutureDatedCorrection: isDateCorrection && rowKey > currentBusinessDayKey,
+      };
     });
-    const currentWindow = toBusinessDayWindowFromKey(currentBusinessDayKey);
     const selectedWindow = toBusinessDayWindowFromKey(selectedDayKey);
     const rangeStartWindow = selectedRange
       ? toBusinessDayWindowFromKey(selectedRange.startDate)
@@ -2177,9 +2299,10 @@ export const sessionService = {
       }
     }
 
-    const activeRows = scopedRows.filter((row) => row.state !== "Cancelled" && row.state !== "LTP-Loss");
-    const ltpRows = scopedRows.filter((row) => row.outcome === "LTP_LOSS");
-    const cancelledRows = scopedRows.filter((row) => row.outcome === "CANCELLED");
+    const summaryRows = scopedRows.filter((row) => !row.isDateCorrection);
+    const activeRows = summaryRows.filter((row) => row.state !== "Cancelled" && row.state !== "LTP-Loss");
+    const ltpRows = summaryRows.filter((row) => row.outcome === "LTP_LOSS");
+    const cancelledRows = summaryRows.filter((row) => row.outcome === "CANCELLED");
     const subtotal = roundMoney(activeRows.reduce((sum, row) => sum + row.amount, 0));
     const discount = roundMoney(activeRows.reduce((sum, row) => sum + row.sessionDiscount, 0));
     const net = roundMoney(subtotal - discount);

@@ -30,6 +30,10 @@ export function getLedgerStatus(input: {
     return "Completed";
   }
 
+  if (input.amount <= 0) {
+    return "Paid";
+  }
+
   if (input.paidAmount === 0) {
     return "Billed-Unpaid";
   }

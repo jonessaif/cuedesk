@@ -44,6 +44,7 @@ function calculateEffectiveSessionAmount(session: {
   overrideStartTime?: Date | null;
   overrideEndTime?: Date | null;
   overrideRatePerMin?: number | null;
+  complimentaryMinutes?: number | null;
   table: { ratePerMin: number; name: string };
   amount?: number;
 }): number {
@@ -55,7 +56,11 @@ function calculateEffectiveSessionAmount(session: {
     return typeof session.amount === "number" ? session.amount : 0;
   }
 
-  const diffMs = effectiveEndTime.getTime() - effectiveStartTime.getTime();
+  const complimentaryMinutes =
+    typeof session.complimentaryMinutes === "number" && Number.isFinite(session.complimentaryMinutes)
+      ? Math.max(0, Math.floor(session.complimentaryMinutes))
+      : 0;
+  const diffMs = effectiveEndTime.getTime() - effectiveStartTime.getTime() - complimentaryMinutes * 60000;
   if (diffMs <= 0) {
     return 0;
   }
@@ -143,6 +148,7 @@ export const billingService = {
             overrideStartTime: true;
             overrideEndTime: true;
             overrideRatePerMin: true;
+            complimentaryMinutes: true;
             playerName: true;
             payerMode: true;
             payerData: true;
@@ -159,6 +165,7 @@ export const billingService = {
             overrideStartTime?: Date | null;
             overrideEndTime?: Date | null;
             overrideRatePerMin?: number | null;
+            complimentaryMinutes?: number | null;
             playerName: string;
             payerMode: "none" | "single" | "split";
             payerData: unknown;
@@ -184,6 +191,7 @@ export const billingService = {
         overrideStartTime: true,
         overrideEndTime: true,
         overrideRatePerMin: true,
+        complimentaryMinutes: true,
         playerName: true,
         payerMode: true,
         payerData: true,

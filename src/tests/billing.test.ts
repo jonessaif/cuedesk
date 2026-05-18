@@ -52,11 +52,53 @@ describe("Billing module", () => {
         discountType: null,
         discountValue: null,
         discountedAmount: 300,
+        customerId: null,
       },
     });
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: { in: [1, 2] } },
       data: { status: "billed", billId: 10 },
+    });
+  });
+
+  it("should subtract complimentary minutes when creating bill totals", async () => {
+    const sessions = [
+      {
+        id: 1,
+        amount: 150,
+        startTime: new Date("2026-04-12T10:00:00.000Z"),
+        endTime: new Date("2026-04-12T11:15:00.000Z"),
+        overrideStartTime: null,
+        overrideEndTime: null,
+        overrideRatePerMin: null,
+        complimentaryMinutes: 60,
+        playerName: "A",
+        payerMode: "single",
+        payerData: { name: "A" },
+        overridePayerMode: null,
+        overridePayerData: null,
+        table: { ratePerMin: 10, name: "S1" },
+      },
+    ];
+    const create = vi.fn().mockResolvedValue({ id: 11, totalAmount: 150, discountedAmount: 150 });
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      sessions: {
+        findMany: vi.fn().mockResolvedValue(sessions),
+        updateMany,
+      },
+      bills: {
+        create,
+      },
+    };
+
+    await billingService.createBill(prisma as never, { sessionIds: [1] });
+
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        totalAmount: 150,
+        discountedAmount: 150,
+      }),
     });
   });
 

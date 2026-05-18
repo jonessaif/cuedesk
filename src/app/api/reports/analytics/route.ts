@@ -42,6 +42,7 @@ type SessionRow = {
   status: "running" | "completed" | "billed";
   overrideStatus: "running" | "completed" | "billed" | null;
   overrideRatePerMin: number | null;
+  complimentaryMinutes: number | null;
   outcome: "NORMAL" | "LTP_LOSS" | "CANCELLED" | null;
   billId: number | null;
 };
@@ -88,11 +89,15 @@ function calculateSessionAmount(args: {
   endTime: Date | null;
   ratePerMin: number;
   tableName: string;
+  complimentaryMinutes?: number | null;
 }): number {
   if (!args.endTime) {
     return 0;
   }
-  const diffMs = args.endTime.getTime() - args.startTime.getTime();
+  const freeMinutes = typeof args.complimentaryMinutes === "number" && Number.isFinite(args.complimentaryMinutes)
+    ? Math.max(0, Math.floor(args.complimentaryMinutes))
+    : 0;
+  const diffMs = args.endTime.getTime() - args.startTime.getTime() - freeMinutes * 60000;
   if (diffMs <= 0) {
     return 0;
   }
@@ -366,6 +371,7 @@ export async function GET(request: Request) {
         status: true,
         overrideStatus: true,
         overrideRatePerMin: true,
+        complimentaryMinutes: true,
         outcome: true,
         billId: true,
       },
@@ -447,6 +453,7 @@ export async function GET(request: Request) {
           endTime: effectiveEnd,
           ratePerMin: session.overrideRatePerMin ?? table.ratePerMin,
           tableName: table.name,
+          complimentaryMinutes: session.complimentaryMinutes,
         })
         : 0;
       baseRevenueBySessionId.set(session.id, amount);

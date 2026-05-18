@@ -147,6 +147,63 @@ describe("Sessions module", () => {
     });
   });
 
+  it("should end session with complimentary minutes and only bill additional time", async () => {
+    const now = new Date("2026-04-12T11:15:00.000Z");
+    const startTime = new Date("2026-04-12T10:00:00.000Z");
+    const update = vi.fn().mockResolvedValue({
+      id: 57,
+      tableId: 7,
+      status: "completed",
+      amount: 150,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+      endTime: now,
+    });
+
+    const prisma = {
+      sessions: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: 57,
+          tableId: 7,
+          playerName: "Arjun",
+          status: "running",
+          startTime,
+        }),
+        update,
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 7,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+    };
+
+    const result = await sessionService.endSession(prisma as never, {
+      tableId: 7,
+      now,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      amount: 150,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+    });
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          amount: 150,
+          complimentaryMinutes: 60,
+          complimentaryReason: "Combo",
+        }),
+      }),
+    );
+  });
+
   it("should end session as LTP loss with zero amount", async () => {
     const now = new Date("2026-04-12T10:10:00.000Z");
     const findFirst = vi.fn().mockResolvedValue({
@@ -382,6 +439,111 @@ describe("Sessions module", () => {
     );
   });
 
+  it("should reject complimentary minutes edit for running sessions", async () => {
+    const update = vi.fn();
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 110,
+          tableId: 1,
+          playerName: "A",
+          status: "running",
+          outcome: "NORMAL",
+          startTime: new Date("2026-04-12T10:00:00.000Z"),
+          endTime: null,
+          payerMode: "none",
+          payerData: null,
+          billId: null,
+          amount: 0,
+          complimentaryMinutes: 0,
+          complimentaryReason: null,
+        }),
+        update,
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 1,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+      bills: {
+        create: vi.fn(),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    await expect(
+      sessionService.overrideSession(prisma as never, {
+        sessionId: 110,
+        complimentaryMinutes: 60,
+        complimentaryReason: "Combo",
+      }),
+    ).rejects.toThrow("Running overrides allow player name, start time, rate, or payer details");
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("should support completed session edit for complimentary minutes", async () => {
+    const update = vi.fn().mockResolvedValue({
+      id: 111,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+      amount: 0,
+    });
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 111,
+          tableId: 1,
+          playerName: "A",
+          status: "completed",
+          outcome: "NORMAL",
+          startTime: new Date("2026-04-12T10:00:00.000Z"),
+          endTime: new Date("2026-04-12T11:00:00.000Z"),
+          payerMode: "single",
+          payerData: { name: "A" },
+          billId: null,
+          amount: 600,
+          complimentaryMinutes: 0,
+          complimentaryReason: null,
+        }),
+        update,
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 1,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+      bills: {
+        create: vi.fn(),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    await sessionService.overrideSession(prisma as never, {
+      sessionId: 111,
+      complimentaryMinutes: 60,
+      complimentaryReason: "Combo",
+    });
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          amount: 0,
+          complimentaryMinutes: 60,
+          complimentaryReason: "Combo",
+        }),
+      }),
+    );
+  });
+
   it("should allow completed session override NORMAL to LTP_LOSS", async () => {
     const update = vi.fn().mockResolvedValue({ id: 141, outcome: "LTP_LOSS", amount: 0 });
     const prisma = {
@@ -593,7 +755,7 @@ describe("Sessions module", () => {
         sessionId: 12,
         overrideStatus: "running",
       }),
-    ).rejects.toThrow("Completed overrides allow player name, start time, end time, rate, or payer details");
+    ).rejects.toThrow("Completed overrides allow player name, start time, end time, rate, complimentary minutes, or payer details");
   });
 
   it("should move billed session back to unbilled", async () => {
@@ -661,6 +823,82 @@ describe("Sessions module", () => {
     });
     expect(deleteMany).toHaveBeenCalledWith({ where: { billId: 77 } });
     expect(deleteBill).toHaveBeenCalledWith({ where: { id: 77 } });
+  });
+
+  it("should move zero amount billed session back to unbilled", async () => {
+    const update = vi.fn().mockResolvedValue({ id: 32, billId: null, status: "completed" });
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
+    const deleteBill = vi.fn().mockResolvedValue({ id: 78 });
+
+    const prisma = {
+      sessions: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 32,
+          tableId: 1,
+          status: "billed",
+          startTime: new Date("2026-04-12T10:00:00.000Z"),
+          endTime: new Date("2026-04-12T11:00:00.000Z"),
+          payerMode: "single",
+          payerData: { name: "A" },
+          billId: 78,
+          amount: 0,
+          complimentaryMinutes: 60,
+          complimentaryReason: "Combo",
+        }),
+        findMany: vi.fn().mockResolvedValue([{ amount: 0 }]),
+        update,
+        updateMany,
+      },
+      tables: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 1,
+          name: "S1",
+          ratePerMin: 10,
+        }),
+      },
+      bills: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 78,
+          totalAmount: 0,
+          discountedAmount: 0,
+          discountType: null,
+        }),
+        create: vi.fn(),
+        delete: deleteBill,
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany,
+      },
+    };
+
+    await sessionService.overrideSession(prisma as never, {
+      sessionId: 32,
+      overrideStatus: "completed",
+    });
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 32 },
+        data: expect.objectContaining({
+          status: "completed",
+          overrideStatus: "completed",
+          billId: null,
+          amount: 0,
+        }),
+      }),
+    );
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { billId: 78 },
+      data: {
+        billId: null,
+        status: "completed",
+        overrideStatus: null,
+      },
+    });
+    expect(deleteMany).toHaveBeenCalledWith({ where: { billId: 78 } });
+    expect(deleteBill).toHaveBeenCalledWith({ where: { id: 78 } });
   });
 
   it("should create override history event when override updates session", async () => {
@@ -1036,5 +1274,179 @@ describe("Sessions module", () => {
       effectivePaid: 0,
     });
     expect(result.summary.unpaid).toBe(0);
+  });
+
+  it("should surface future-dated current ledger rows for correction without counting totals", async () => {
+    const paymentsFindMany = vi.fn().mockResolvedValue([]);
+    const futureStart = new Date(2026, 3, 13, 19, 0, 0, 0);
+    const futureEnd = new Date(2026, 3, 13, 20, 0, 0, 0);
+
+    const prisma = {
+      sessions: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: 701,
+            tableId: 1,
+            playerName: "Wrong Date",
+            startTime: futureStart,
+            endTime: futureEnd,
+            businessDayKey: "2026-04-13",
+            status: "completed",
+            outcome: "NORMAL",
+            billId: null,
+            amount: 300,
+            cancellationReason: null,
+            canceledAt: null,
+            payerMode: "single",
+            payerData: { name: "Wrong Date" },
+            overrideStartTime: futureStart,
+            overrideEndTime: futureEnd,
+            overrideRatePerMin: null,
+            overridePayerMode: null,
+            overridePayerData: null,
+            overrideStatus: null,
+            overridePaymentModes: null,
+            table: { name: "S1", ratePerMin: 5 },
+          },
+        ]),
+      },
+      bills: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      payments: {
+        findMany: paymentsFindMany,
+      },
+      dailyReports: {
+        upsert: vi.fn(),
+      },
+    };
+
+    const result = await sessionService.getAllSessions(prisma as never, {
+      scope: "current",
+      now: new Date(2026, 3, 12, 12, 0, 0, 0),
+    });
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      id: 701,
+      isDateCorrection: true,
+      isFutureDatedCorrection: true,
+      state: "Completed",
+    });
+    expect(result.summary.subtotal).toBe(0);
+    expect(result.summary.unpaid).toBe(0);
+  });
+
+  it("should surface back-dated current ledger rows for correction without counting totals", async () => {
+    const paymentsFindMany = vi.fn().mockResolvedValue([]);
+    const backdatedStart = new Date(2026, 3, 11, 19, 0, 0, 0);
+    const backdatedEnd = new Date(2026, 3, 12, 11, 0, 0, 0);
+
+    const prisma = {
+      sessions: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: 702,
+            tableId: 1,
+            playerName: "Back Date",
+            startTime: backdatedStart,
+            endTime: backdatedEnd,
+            businessDayKey: "2026-04-11",
+            status: "completed",
+            outcome: "NORMAL",
+            billId: null,
+            amount: 300,
+            cancellationReason: null,
+            canceledAt: null,
+            payerMode: "single",
+            payerData: { name: "Back Date" },
+            overrideStartTime: backdatedStart,
+            overrideEndTime: backdatedEnd,
+            overrideRatePerMin: null,
+            overridePayerMode: null,
+            overridePayerData: null,
+            overrideStatus: null,
+            overridePaymentModes: null,
+            table: { name: "S1", ratePerMin: 5 },
+          },
+        ]),
+      },
+      bills: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      payments: {
+        findMany: paymentsFindMany,
+      },
+      dailyReports: {
+        upsert: vi.fn(),
+      },
+    };
+
+    const result = await sessionService.getAllSessions(prisma as never, {
+      scope: "current",
+      now: new Date(2026, 3, 12, 12, 0, 0, 0),
+    });
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      id: 702,
+      isDateCorrection: true,
+      isFutureDatedCorrection: false,
+      state: "Completed",
+    });
+    expect(result.summary.subtotal).toBe(0);
+    expect(result.summary.unpaid).toBe(0);
+  });
+
+  it("should not surface old back-dated rows that did not touch the current business day", async () => {
+    const oldStart = new Date(2026, 3, 11, 19, 0, 0, 0);
+    const oldEnd = new Date(2026, 3, 11, 20, 0, 0, 0);
+
+    const prisma = {
+      sessions: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: 703,
+            tableId: 1,
+            playerName: "Old Back Date",
+            startTime: oldStart,
+            endTime: oldEnd,
+            businessDayKey: "2026-04-11",
+            status: "completed",
+            outcome: "NORMAL",
+            billId: null,
+            amount: 300,
+            cancellationReason: null,
+            canceledAt: null,
+            payerMode: "single",
+            payerData: { name: "Old Back Date" },
+            overrideStartTime: oldStart,
+            overrideEndTime: oldEnd,
+            overrideRatePerMin: null,
+            overridePayerMode: null,
+            overridePayerData: null,
+            overrideStatus: null,
+            overridePaymentModes: null,
+            table: { name: "S1", ratePerMin: 5 },
+          },
+        ]),
+      },
+      bills: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      payments: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      dailyReports: {
+        upsert: vi.fn(),
+      },
+    };
+
+    const result = await sessionService.getAllSessions(prisma as never, {
+      scope: "current",
+      now: new Date(2026, 3, 12, 12, 0, 0, 0),
+    });
+
+    expect(result.rows).toHaveLength(0);
   });
 });

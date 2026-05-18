@@ -1,7 +1,7 @@
 import { requireOperatorOrAdmin } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 
-type ExpenseModeInput = "cash" | "bank";
+type ExpenseModeInput = "cash" | "bank" | "upi_other";
 
 function isDateKey(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -48,6 +48,8 @@ export async function GET(request: Request) {
             item: true;
             amount: true;
             mode: true;
+            isDeleted: true;
+            deletedAt: true;
             createdAt: true;
             category: { select: { id: true; name: true } };
             user: { select: { id: true; name: true } };
@@ -58,6 +60,8 @@ export async function GET(request: Request) {
           item: string;
           amount: number;
           mode: ExpenseModeInput;
+          isDeleted?: boolean;
+          deletedAt?: Date | null;
           createdAt: Date;
           category: { id: number; name: string };
           user: { id: number; name: string };
@@ -82,20 +86,26 @@ export async function GET(request: Request) {
         item: true,
         amount: true,
         mode: true,
+        isDeleted: true,
+        deletedAt: true,
         createdAt: true,
         category: { select: { id: true, name: true } },
         user: { select: { id: true, name: true } },
       },
     });
 
-    const cash = Math.round(rows.filter((row) => row.mode === "cash").reduce((sum, row) => sum + row.amount, 0));
-    const bank = Math.round(rows.filter((row) => row.mode === "bank").reduce((sum, row) => sum + row.amount, 0));
+    const activeRows = rows.filter((row) => !row.isDeleted);
+    const cash = Math.round(activeRows.filter((row) => row.mode === "cash").reduce((sum, row) => sum + row.amount, 0));
+    const bank = Math.round(activeRows.filter((row) => row.mode === "bank").reduce((sum, row) => sum + row.amount, 0));
+    const upi_other = Math.round(activeRows.filter((row) => row.mode === "upi_other").reduce((sum, row) => sum + row.amount, 0));
     const normalizedRows = rows.map((row) => ({
         id: row.id,
         date: row.date,
         item: row.item,
         amount: Math.round(row.amount),
         mode: row.mode,
+        is_deleted: Boolean(row.isDeleted),
+        deleted_at: row.deletedAt ?? null,
         category_id: row.category.id,
         category_name: row.category.name,
         created_by_user_id: row.user.id,
@@ -104,6 +114,9 @@ export async function GET(request: Request) {
       }));
     const categoryTotalsMap = new Map<number, { category_id: number; category_name: string; total: number }>();
     for (const row of normalizedRows) {
+      if (row.is_deleted) {
+        continue;
+      }
       const current = categoryTotalsMap.get(row.category_id);
       if (current) {
         current.total += row.amount;
@@ -121,7 +134,7 @@ export async function GET(request: Request) {
 
     return Response.json({
       data: normalizedRows,
-      summary: { cash, bank, total: cash + bank },
+      summary: { cash, bank, upi_other, total: cash + bank + upi_other },
       by_category,
     }, { status: 200 });
   } catch (error) {
@@ -167,8 +180,8 @@ export async function POST(request: Request) {
     if (!Number.isFinite(amount) || amount <= 0) {
       return Response.json({ error: "Amount must be greater than 0" }, { status: 400 });
     }
-    if (mode !== "cash" && mode !== "bank") {
-      return Response.json({ error: "Mode must be cash or bank" }, { status: 400 });
+    if (mode !== "cash" && mode !== "bank" && mode !== "upi_other") {
+      return Response.json({ error: "Mode must be cash, bank, or upi other" }, { status: 400 });
     }
 
     const category = await (
